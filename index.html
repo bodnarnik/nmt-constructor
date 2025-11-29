@@ -811,6 +811,20 @@ window.undoLastAction = function() {
             }
         };
 
+	// --- ВИПРАВЛЕННЯ: Довідкові матеріали ---
+        window.showReferenceMaterials = function() {
+            const test = window.findItem(window.state.activeTestId);
+            if (!test || !test.referenceUrl) {
+                alert("Для цього тесту не вказано посилання на довідкові матеріали.");
+                return;
+            }
+            const iframe = document.getElementById('reference-iframe');
+            if (iframe) {
+                iframe.src = test.referenceUrl;
+                document.getElementById('reference-modal').style.display = 'block';
+            }
+        };
+
 	// Функція для розбиття блоків на сторінки
         window.getTestPages = function(blocks) {
             let pages = [];
@@ -1097,13 +1111,14 @@ window.undoLastAction = function() {
                         <button onclick="window.switchSection('cabinet')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Кабінет тестування</button>
                     </div>
 
-                    <div class="flex justify-between items-center mb-4">
-                        <h2 class="text-2xl font-bold text-gray-800">Структура папок</h2>
-                        <div class="flex gap-2">
-                            <button onclick="window.createNewFolder()" class="spa-btn spa-btn-secondary">Створити папку</button>
+                    <div class="flex gap-2 flex-wrap justify-end">
+                            <button onclick="window.exportFullBackup()" class="spa-btn border border-gray-300 bg-white text-gray-700 hover:bg-gray-50" title="Зберегти всі тести у файл">💾 Зберегти у файл</button>
+                            <button onclick="window.triggerImport()" class="spa-btn border border-gray-300 bg-white text-gray-700 hover:bg-gray-50" title="Завантажити тести з файлу">📂 Відкрити файл</button>
+                            <input type="file" id="import-file-input" style="display: none;" accept=".json" onchange="window.importFullBackup(event)">
+                            
+                            <div class="w-px bg-gray-300 mx-1"></div> <button onclick="window.createNewFolder()" class="spa-btn spa-btn-secondary">Створити папку</button>
                             <button onclick="window.createNewTest()" class="spa-btn spa-btn-primary">Створити тест</button>
                         </div>
-                    </div>
 
                     <div class="breadcrumbs mb-6">${breadcrumbsHtml}</div>
 
@@ -1366,102 +1381,101 @@ window.undoLastAction = function() {
         // Функція для візуалізації відповідей у режимі перегляду
         window.highlightAnswersInReview = function() {
             const answers = window.state.runnerState.answers;
-            
             const test = window.findItem(window.state.activeTestId);
-            test.blocks.forEach(b => {
-                // Відкриваємо блок пояснення
-                const an = document.getElementById(`an-${b.id}`);
-                const hasExplanation = b.explanation && b.explanation.replace(/<[^>]*>/g, '').trim().length > 0;
-                
-                if(an && hasExplanation) {
-                    an.style.display = 'block';
-                } else if (an) {
-                    an.style.display = 'none';
-                }
-                
-                // Блокуємо інпути
-                const blk = document.getElementById(`blk-${b.id}`);
-                if(blk) blk.querySelectorAll('input, button, select').forEach(el => el.disabled = true);
-                
-                // --- ЗАПОВНЕННЯ ВІДПОВІДЕЙ ---
-                const userAns = answers[b.id]?.final;
 
-                if (b.type === 'single' && userAns) {
-                    const opt = document.getElementById(`opt-${userAns}`);
-                    if(opt) {
-                        const radio = opt.querySelector('input');
-                        if(radio) radio.checked = true; // Ставимо галочку в Input
-                        opt.classList.add('selected'); // Додаємо стиль виділення
-                        if (userAns !== b.correctId) opt.style.backgroundColor = '#fee2e2'; 
-                    }
-                }
-                else if (b.type === 'multiple' && Array.isArray(userAns)) {
-                    userAns.forEach(oid => {
-                         const opt = document.getElementById(`opt-${oid}`);
-                         if(opt) {
-                             const checkbox = opt.querySelector('input');
-                             if(checkbox) checkbox.checked = true;
-                             opt.classList.add('selected');
-                         }
-                    });
-                }
-		else if (b.type === 'structured' && userAns) {
-                    // userAns = { itemId: value, ... }
-                    b.items.forEach(item => {
-                        const input = document.getElementById(`in-${b.id}-${item.id}`);
-                        const val = userAns[item.id];
-                        
-                        if(input && val !== undefined) {
-                            input.value = val;
-                            
-                            let cleanUser = val.toString().replace(',', '.').trim();
-                            let cleanCorrect = item.correctAnswer.toString().replace(',', '.').trim();
-                            
-                            if (cleanUser != cleanCorrect) {
-                                input.style.backgroundColor = '#fee2e2';
-                                input.style.borderColor = 'red';
+            // Чекаємо трохи, щоб HTML точно встиг намалюватися
+            setTimeout(() => {
+                test.blocks.forEach(b => {
+                    // 1. Показуємо пояснення
+                    const an = document.getElementById(`an-${b.id}`);
+                    const hasExplanation = b.explanation && b.explanation.replace(/<[^>]*>/g, '').trim().length > 0;
+                    if(an && hasExplanation) an.style.display = 'block';
+                    else if (an) an.style.display = 'none';
+                    
+                    // 2. Блокуємо інпути
+                    const blk = document.getElementById(`blk-${b.id}`);
+                    if(blk) blk.querySelectorAll('input, button, select').forEach(el => el.disabled = true);
+                    
+                    // 3. Підсвічуємо відповіді користувача
+                    const userAns = answers[b.id]?.final;
+
+                    if (b.type === 'single' && userAns) {
+                        // userAns - це ID варіанту
+                        const opt = document.getElementById(`opt-${userAns}`);
+                        if(opt) {
+                            const radio = opt.querySelector('input[type="radio"]');
+                            if(radio) radio.checked = true;
+                            opt.classList.add('selected');
+                            // Фарбуємо в червоний, якщо неправильно (тільки якщо вибрано)
+                            if (userAns !== b.correctId) {
+                                opt.style.backgroundColor = '#fee2e2'; 
+                                opt.style.borderColor = '#ef4444';
                             } else {
-                                input.style.backgroundColor = '#ecfdf5'; // Зелений фон для правильного
-                                input.style.borderColor = 'green';
+                                opt.style.backgroundColor = '#dcfce7'; // Зелений, якщо правильно
+                                opt.style.borderColor = '#22c55e';
                             }
                         }
-                    });
-                }
-                else if (b.type === 'short' && userAns) {
-                    const input = document.getElementById(`in-${b.id}`);
-                    if(input) {
-                        input.value = userAns;
-                        // Порівнюємо значення (якщо число)
-                        let cleanUser = userAns.toString().replace(',', '.').trim();
-                        let cleanCorrect = b.correctAnswer.toString().replace(',', '.').trim();
-                        
-                        if(cleanUser != cleanCorrect) input.style.backgroundColor = '#fee2e2';
                     }
-                }
-                else if (b.type === 'dropdown' && userAns) {
-                    for(const [ddId, val] of Object.entries(userAns)) {
-                        const sel = document.getElementById(`dd-input-${b.id}-${ddId}`);
-                        if(sel) sel.value = val;
+                    else if (b.type === 'multiple' && Array.isArray(userAns)) {
+                        userAns.forEach(oid => {
+                             const opt = document.getElementById(`opt-${oid}`);
+                             if(opt) {
+                                 const checkbox = opt.querySelector('input[type="checkbox"]');
+                                 if(checkbox) checkbox.checked = true;
+                                 opt.classList.add('selected');
+                                 
+                                 // Перевірка на правильність конкретного пункту
+                                 if (b.correctIds && !b.correctIds.includes(oid)) {
+                                    opt.style.backgroundColor = '#fee2e2'; // Червоний, якщо зайвий
+                                 } else {
+                                    opt.style.backgroundColor = '#dcfce7'; // Зелений, якщо правильно вгадав
+                                 }
+                             }
+                        });
                     }
-                }
-                // --- ВИПРАВЛЕННЯ ДЛЯ ВІДПОВІДНОСТЕЙ (Matching) ---
-                else if (b.type === 'matching' && userAns) {
-                    // userAns = { leftId: rightId, ... }
-                    for (const [leftId, rightId] of Object.entries(userAns)) {
-                        // Знаходимо слот
-                        const slot = document.getElementById(`slot-${b.id}-${leftId}`);
-                        // Знаходимо перетягуваний елемент (він спочатку в пулі справа)
-                        // Шукаємо його по data-rid (Right ID) всередині цього блоку
-                        // Важливо шукати саме в межах цього завдання, щоб не сплутати з іншими
-                        const rightItem = blk.querySelector(`.dnd-draggable[data-rid="${rightId}"]`);
-                        
-                        if (slot && rightItem) {
-                            // Переміщуємо елемент у слот (DOM Node move)
-                            slot.appendChild(rightItem);
+                    else if (b.type === 'structured' && userAns) {
+                        b.items.forEach(item => {
+                            const input = document.getElementById(`in-${b.id}-${item.id}`);
+                            const val = userAns[item.id];
+                            if(input && val !== undefined) {
+                                input.value = val;
+                                let cleanUser = val.toString().replace(',', '.').trim();
+                                let cleanCorrect = item.correctAnswer.toString().replace(',', '.').trim();
+                                if (cleanUser != cleanCorrect) {
+                                    input.style.backgroundColor = '#fee2e2';
+                                    input.style.borderColor = 'red';
+                                } else {
+                                    input.style.backgroundColor = '#ecfdf5';
+                                    input.style.borderColor = 'green';
+                                }
+                            }
+                        });
+                    }
+                    else if (b.type === 'short' && userAns) {
+                        const input = document.getElementById(`in-${b.id}`);
+                        if(input) {
+                            input.value = userAns;
+                            let cleanUser = userAns.toString().replace(',', '.').trim();
+                            let cleanCorrect = b.correctAnswer.toString().replace(',', '.').trim();
+                            if(cleanUser != cleanCorrect) input.style.backgroundColor = '#fee2e2';
+                            else input.style.backgroundColor = '#ecfdf5';
                         }
                     }
-                }
-            });
+                    else if (b.type === 'dropdown' && userAns) {
+                        for(const [ddId, val] of Object.entries(userAns)) {
+                            const sel = document.getElementById(`dd-input-${b.id}-${ddId}`);
+                            if(sel) sel.value = val;
+                        }
+                    }
+                    else if (b.type === 'matching' && userAns) {
+                        for (const [leftId, rightId] of Object.entries(userAns)) {
+                            const slot = document.getElementById(`slot-${b.id}-${leftId}`);
+                            const rightItem = blk.querySelector(`.dnd-draggable[data-rid="${rightId}"]`);
+                            if (slot && rightItem) slot.appendChild(rightItem);
+                        }
+                    }
+                });
+            }, 200); // Збільшена затримка для надійності
             
             // Приховуємо панель таймера
             const topPanel = document.getElementById('top-panel');
@@ -5197,6 +5211,61 @@ window.formatColumns = function(cols) {
         };
 
         window.init();
+
+	// --- НОВЕ: Експорт та Імпорт Даних ---
+        
+        window.downloadJSON = function(content, fileName) {
+            const a = document.createElement("a");
+            const file = new Blob([JSON.stringify(content, null, 2)], {type: 'application/json'});
+            a.href = URL.createObjectURL(file);
+            a.download = fileName;
+            a.click();
+        };
+
+        window.exportFullBackup = function() {
+            const backup = {
+                items: window.state.items,          // Ваші тести і папки
+                bankItems: window.state.bankItems,  // Банк завдань
+                date: new Date().toLocaleString()
+            };
+            const name = `NMT_Backup_${new Date().toISOString().slice(0,10)}.json`;
+            window.downloadJSON(backup, name);
+            alert('Файл успішно збережено! Збережіть його в надійному місці.');
+        };
+
+        window.triggerImport = function() {
+            document.getElementById('import-file-input').click();
+        };
+
+        window.importFullBackup = function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!confirm("УВАГА! Імпорт повністю замінить ваші поточні тести та банк завдань даними з файлу. Продовжити?")) {
+                event.target.value = ''; // Скидаємо вибір
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    
+                    if (data.items) window.state.items = data.items;
+                    if (data.bankItems) window.state.bankItems = data.bankItems;
+                    
+                    // Зберігаємо в браузер
+                    window.saveTestsToStorage();
+                    
+                    alert("Дані успішно відновлено!");
+                    window.location.reload(); // Перезавантажуємо сторінку
+                } catch (err) {
+                    alert("Помилка при зчитуванні файлу. Переконайтеся, що це правильний JSON файл.");
+                    console.error(err);
+                }
+            };
+            reader.readAsText(file);
+        };
     </script>
 </body>
 </html>
