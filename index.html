@@ -1100,13 +1100,9 @@ window.undoLastAction = function() {
                     <div class="flex justify-between items-center mb-4">
                         <h2 class="text-2xl font-bold text-gray-800">Структура папок</h2>
                         <div class="flex gap-2">
-    						<button onclick="window.downloadTests()" class="spa-btn border-green-600 text-green-600 hover:bg-green-50" title="Зберегти всі тести у файл">💾 Зберегти у файл</button>
-  							  <button onclick="window.triggerImportTests()" class="spa-btn border-orange-600 text-orange-600 hover:bg-orange-50" title="Завантажити тести з файлу">📂 Відкрити файл</button>
-						    <input type="file" id="import-file-input" style="display: none;" accept=".json" onchange="window.importTestsFile(event)">
-    
-						    <button onclick="window.createNewFolder()" class="spa-btn spa-btn-secondary">Створити папку</button>
-						    <button onclick="window.createNewTest()" class="spa-btn spa-btn-primary">Створити тест</button>
-						</div>
+                            <button onclick="window.createNewFolder()" class="spa-btn spa-btn-secondary">Створити папку</button>
+                            <button onclick="window.createNewTest()" class="spa-btn spa-btn-primary">Створити тест</button>
+                        </div>
                     </div>
 
                     <div class="breadcrumbs mb-6">${breadcrumbsHtml}</div>
@@ -3174,17 +3170,6 @@ window.formatColumns = function(cols) {
             }
         };
 
-		window.showReferenceMaterials = function() {
-    const test = window.findItem(window.state.activeTestId);
-    if(test && test.referenceUrl) {
-        const iframe = document.getElementById('reference-iframe');
-        iframe.src = test.referenceUrl;
-        document.getElementById('reference-modal').style.display = 'block';
-    } else {
-        alert("У цьому тесті не вказано посилання на довідкові матеріали.");
-    }
-};
-
         window.toggleTopPanel = function() {
             document.getElementById('top-panel').classList.toggle('hidden-panel');
             const btn = document.getElementById('return-panel-btn');
@@ -3345,49 +3330,17 @@ window.formatColumns = function(cols) {
             
             // --- ЛОГІКА СТОРІНОК ---
             // Розбиваємо блоки на сторінки
-            let currentBlocks = [];
-let paginationHtml = '';
-
-// Якщо це режим ПЕРЕГЛЯДУ (вчитель дивиться роботу учня), показуємо ВСЕ одразу
-if (window.state.isReviewMode) {
-    currentBlocks = test.blocks; // Без сторінок
-    paginationHtml = ''; // Без кнопок навігації
-} else {
-    // Якщо це режим ТЕСТУВАННЯ (учень здає), використовуємо сторінки
-    const pages = window.getTestPages(test.blocks);
-    
-    // Перевірка меж сторінки
-    if (window.state.runnerState.currentPage >= pages.length) {
-        window.state.runnerState.currentPage = pages.length - 1;
-    }
-    if (window.state.runnerState.currentPage < 0) {
-        window.state.runnerState.currentPage = 0;
-    }
-    
-    currentBlocks = pages[window.state.runnerState.currentPage];
-
-    // Генеруємо кнопки навігації
-    const currentPageIndex = window.state.runnerState.currentPage;
-    const totalPages = pages.length;
-    
-    if (totalPages > 1) {
-        const prevBtn = currentPageIndex > 0 
-            ? `<button onclick="window.changePage(-1)" class="btn-brand bg-white text-gray-800 border-gray-300 hover:bg-gray-100">← Назад</button>` 
-            : `<div></div>`;
-        
-        const nextBtn = currentPageIndex < totalPages - 1 
-            ? `<button onclick="window.changePage(1)" class="btn-brand">Далі →</button>` 
-            : `<div></div>`; 
-
-        paginationHtml = `
-            <div class="pagination-container">
-                ${prevBtn}
-                <div class="text-gray-500 font-bold self-center">Сторінка ${currentPageIndex + 1} з ${totalPages}</div>
-                ${nextBtn}
-            </div>
-        `;
-    }
-}
+            const pages = window.getTestPages(test.blocks);
+            // Перевіряємо, чи індекс сторінки в межах (на випадок помилки)
+            if (window.state.runnerState.currentPage >= pages.length) {
+                window.state.runnerState.currentPage = pages.length - 1;
+            }
+            if (window.state.runnerState.currentPage < 0) {
+                window.state.runnerState.currentPage = 0;
+            }
+            
+            const currentBlocks = pages[window.state.runnerState.currentPage];
+            // ---------------------
 
             // --- ТАЙМЕР ---
             let initialTimeStr = '';
@@ -5246,5 +5199,4 @@ if (window.state.isReviewMode) {
         window.init();
     </script>
 </body>
-
 </html>
