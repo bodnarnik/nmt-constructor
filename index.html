@@ -747,27 +747,56 @@
         // STATE
         window.state = {
             view: 'dashboard',
-            currentSection: 'tests', // 'tests', 'cabinet', або 'bank'
+            currentSection: 'tests',
             items: [], 
-            bankItems: [], // НОВЕ: Елементи банку (папки і завдання)
-            currentBankFolderId: 'root', // НОВЕ: Поточна папка в банку
-            editingBankTaskId: null, // НОВЕ: ID завдання, яке редагується в банку 
-            sessions: [], // Тут будуть відкриті сесії тестування
-            results: [],  // Тут будуть збережені відповіді учнів
+            bankItems: [], 
+            currentBankFolderId: 'root', 
+            editingBankTaskId: null, 
+            sessions: [], 
+            results: [], 
             currentFolderId: 'root', 
             activeTestId: null,
-            activeSessionId: null, // ID поточної сесії для учня
-            studentName: null,     // Ім'я учня
+            activeSessionId: null, 
+            studentName: null,     
             editorDraft: null,
-            runnerState: {}
+            runnerState: {},
+            dashboardView: 'grid',
+            dashboardSort: 'date_desc',
+            cabinetTab: 'active', // 'active' або 'archive'
+            searchQuery: ''       // Глобальний пошук
         };
 
 
-        let timerInterval;
-        window.editingTableElement = null; // NEW: Track table being edited
-
-        // --- NEW: UNDO HISTORY STACK ---
+	let timerInterval;
+        window.editingTableElement = null; 
         window.editorHistory = [];
+
+	window.archiveSession = function(sid) {
+            if(confirm("Перемістити цей журнал в Архів?")) {
+                const s = window.state.sessions.find(x => x.id === sid);
+                if(s) {
+                    s.isArchived = true;
+                    s.isActive = false; // Автоматично закриваємо, якщо в архіві
+                    window.saveTestsToStorage();
+                    window.renderApp();
+                }
+            }
+        };
+
+	// --- НОВІ ФУНКЦІЇ АРХІВУВАННЯ ---
+	window.unarchiveSession = function(sid) {
+            const s = window.state.sessions.find(x => x.id === sid);
+            if(s) {
+                s.isArchived = false;
+                window.saveTestsToStorage();
+                window.renderApp();
+            }
+        };
+        
+        // Функція очищення пошуку при переході
+        window.clearSearch = function() {
+            window.state.searchQuery = '';
+        };
         
         window.saveHistory = function() {
             // Зберігаємо історію, тільки якщо є активний редактор
@@ -863,6 +892,50 @@ window.undoLastAction = function() {
             else {
                 return { cols: 5, size: '26px', fontSize: '11px' };
             }
+        };
+
+	// --- НОВІ ФУНКЦІЇ: Керування таблицею (Сортування + Розгортання) ---
+        
+        // Ініціалізація стану UI, якщо його немає
+        window.ensureCabinetState = function() {
+            if (!window.state.cabinetUI) window.state.cabinetUI = {};
+        };
+
+        // 1. Перемикання "Показати всі / Показати 10"
+        window.toggleCabinetExpansion = function(sessionId) {
+            window.ensureCabinetState();
+            const current = window.state.cabinetUI[sessionId] || {};
+            
+            // Створюємо або оновлюємо стан
+            window.state.cabinetUI[sessionId] = { 
+                ...current, 
+                expanded: !current.expanded 
+            };
+            window.renderApp();
+        };
+
+        // 2. Сортування таблиці
+        window.sortCabinetTable = function(sessionId, column) {
+            window.ensureCabinetState();
+            const current = window.state.cabinetUI[sessionId] || { sort: 'date', asc: false, expanded: false };
+            
+            let newAsc = false;
+            // Якщо клікнули по тій самій колонці - змінюємо напрямок
+            if (current.sort === column) {
+                newAsc = !current.asc;
+            } else {
+                // Якщо нова колонка - за замовчуванням:
+                // Для тексту (ім'я) - А-Я (true)
+                // Для чисел/дати (бал, дата) - Спадання (false)
+                newAsc = (column === 'name'); 
+            }
+
+            window.state.cabinetUI[sessionId] = { 
+                ...current, 
+                sort: column, 
+                asc: newAsc 
+            };
+            window.renderApp();
         };
 
         // --- INIT ---
@@ -1085,70 +1158,100 @@ window.undoLastAction = function() {
 
         // --- DASHBOARD ---
         window.renderDashboard = function(container) {
-            // Перевірка: яку вкладку малювати
-            if (window.state.currentSection === 'cabinet') {
-                window.renderCabinet(container);
-                return;
-            }
+            if (window.state.currentSection === 'cabinet') { window.renderCabinet(container); return; }
+            if (window.state.currentSection === 'bank') { window.renderBank(container); return; }
 
-	    // НОВЕ: Перехід до Банку
-            if (window.state.currentSection === 'bank') {
-                window.renderBank(container);
-                return;
-            }
+            // 1. Фільтрація
+            const query = (window.state.searchQuery || '').toLowerCase();
+            
+            let currentItems = window.state.items.filter(item => {
+                if (query) {
+                    return item.title.toLowerCase().includes(query);
+                }
+                return item.parentId === window.state.currentFolderId;
+            });
+            
+            // 2. Сортування
+            const sortMode = window.state.dashboardSort || 'alpha_asc';
+            currentItems.sort((a, b) => {
+                if (sortMode === 'alpha_asc') return a.title.localeCompare(b.title);
+                if (sortMode === 'alpha_desc') return b.title.localeCompare(a.title);
+                const dateA = a.createdAt || 0;
+                const dateB = b.createdAt || 0;
+                if (sortMode === 'date_desc') return dateB - dateA; 
+                if (sortMode === 'date_asc') return dateA - dateB; 
+                return 0;
+            });
 
-            // --- Стандартний вигляд "Мої тести" ---
-            const currentItems = window.state.items.filter(item => item.parentId === window.state.currentFolderId);
-            const folders = currentItems.filter(item => item.type === 'folder').sort((a,b) => a.title.localeCompare(b.title));
-            const tests = currentItems.filter(item => item.type === 'test').sort((a,b) => a.title.localeCompare(b.title));
-            const breadcrumbsHtml = window.getBreadcrumbsHtml();
+            const folders = currentItems.filter(item => item.type === 'folder');
+            const tests = currentItems.filter(item => item.type === 'test');
+
+            const breadcrumbsHtml = query ? `<span class="text-blue-600 font-bold">🔍 Результати пошуку: "${window.state.searchQuery}"</span> <button onclick="window.clearSearch(); window.renderApp()" class="text-xs ml-2 text-red-500 underline">Скинути</button>` : window.getBreadcrumbsHtml();
+            
+            const viewMode = window.state.dashboardView || 'grid';
+            let containerClass = viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'flex flex-col gap-2';
+            let itemClass = viewMode === 'grid' ? 'spa-card flex flex-col justify-between h-full' : 'spa-card flex flex-row items-center justify-between p-3'; 
+
+            const renderItem = (item, isFolder) => {
+                const icon = isFolder ? ICONS.folder : `<span class="text-2xl">📝</span>`;
+                const dateStr = item.createdAt ? new Date(item.createdAt).toLocaleDateString() : '';
+                const subInfo = isFolder ? `<span class="text-xs text-gray-400">Папка</span>` : `<span class="text-xs text-gray-400">${dateStr}</span>`;
+                const editAction = isFolder ? `window.renameItem(event, '${item.id}')` : `window.editTest('${item.id}')`;
+
+                const innerHtml = viewMode === 'grid' 
+                    ? `<div class="flex items-start gap-3 mb-2"><span class="${isFolder ? 'folder-icon' : ''}">${icon}</span><div><h2 class="font-bold text-lg leading-tight cursor-pointer hover:text-blue-600" onclick="${isFolder ? `window.openFolder('${item.id}')` : `window.editTest('${item.id}')`}">${item.title}</h2>${subInfo}</div></div>${!isFolder ? `<p class="text-sm text-gray-500 mb-4 line-clamp-2">${item.description || ''}</p>` : ''}<div class="flex gap-2 justify-end mt-auto pt-2 border-t border-gray-100">${!isFolder ? `<button onclick="window.runTest('${item.id}')" class="text-green-600 font-bold text-xs hover:bg-green-50 px-2 py-1 rounded">Пройти</button><button onclick="window.openTestForSession('${item.id}')" class="text-purple-600 font-bold text-xs hover:bg-purple-50 px-2 py-1 rounded">Відкрити</button>` : ''}<button onclick="${editAction}" class="text-blue-600 hover:bg-blue-50 p-1 rounded" title="Редагувати">${ICONS.edit}</button><button onclick="window.deleteItem(event, '${item.id}')" class="text-red-600 hover:bg-red-50 p-1 rounded" title="Видалити">${ICONS.trash}</button></div>`
+                    : `<div class="flex items-center gap-3 flex-1 cursor-pointer" onclick="${isFolder ? `window.openFolder('${item.id}')` : `window.editTest('${item.id}')`}"><span class="${isFolder ? 'folder-icon' : ''}">${icon}</span><span class="font-bold text-gray-700">${item.title}</span>${subInfo}</div><div class="flex gap-2 items-center">${!isFolder ? `<button onclick="window.runTest('${item.id}')" class="text-green-600 font-bold text-xs border border-green-200 px-2 py-1 rounded hover:bg-green-50">Пройти</button><button onclick="window.openTestForSession('${item.id}')" class="text-purple-600 font-bold text-xs border border-purple-200 px-2 py-1 rounded hover:bg-purple-50">Відкрити</button>` : ''}<button onclick="${editAction}" class="text-gray-400 hover:text-blue-600 p-1">${ICONS.edit}</button><button onclick="window.deleteItem(event, '${item.id}')" class="text-gray-400 hover:text-red-600 p-1">${ICONS.trash}</button></div>`;
+
+                const dragAttrs = `draggable="true" ondragstart="window.dashDragStart(event, '${item.id}')" ${isFolder ? `ondragover="window.dashDragOver(event)" ondrop="window.dashDrop(event, '${item.id}')"` : ''}`;
+                return `<div class="${itemClass} ${isFolder ? 'folder-card' : ''}" ${dragAttrs} style="${isFolder && viewMode==='list' ? 'background:#f9fafb; border:1px solid #e5e7eb;' : ''}">${innerHtml}</div>`;
+            };
 
             container.innerHTML = `
                 <div class="max-w-6xl mx-auto p-6">
-                    <div class="flex gap-4 mb-8 border-b pb-2">
-                        <button onclick="window.switchSection('tests')" class="text-xl font-bold border-b-2 border-[#FF2938] pb-2 px-4 text-[#FF2938]">Мої тести</button>
-                        <button onclick="window.switchSection('bank')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Банк завдань</button>
-                        <button onclick="window.switchSection('cabinet')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Кабінет тестування</button>
+                    <div class="flex gap-4 mb-4 border-b pb-2">
+                        <button onclick="window.clearSearch(); window.switchSection('tests')" class="text-xl font-bold border-b-2 border-[#FF2938] pb-2 px-4 text-[#FF2938]">Мої тести</button>
+                        <button onclick="window.clearSearch(); window.switchSection('bank')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Банк завдань</button>
+                        <button onclick="window.clearSearch(); window.switchSection('cabinet')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Кабінет тестування</button>
                     </div>
 
-                    <div class="flex gap-2 flex-wrap justify-end">
-                            <button onclick="window.exportFullBackup()" class="spa-btn border border-gray-300 bg-white text-gray-700 hover:bg-gray-50" title="Зберегти всі тести у файл">💾 Зберегти у файл</button>
-                            <button onclick="window.triggerImport()" class="spa-btn border border-gray-300 bg-white text-gray-700 hover:bg-gray-50" title="Завантажити тести з файлу">📂 Відкрити файл</button>
-                            <input type="file" id="import-file-input" style="display: none;" accept=".json" onchange="window.importFullBackup(event)">
-                            
-                            <div class="w-px bg-gray-300 mx-1"></div> <button onclick="window.createNewFolder()" class="spa-btn spa-btn-secondary">Створити папку</button>
-                            <button onclick="window.createNewTest()" class="spa-btn spa-btn-primary">Створити тест</button>
+                    <div class="flex flex-col md:flex-row justify-between items-center gap-4 mb-6 bg-white p-3 rounded shadow-sm border">
+                        <div class="breadcrumbs text-sm m-0 flex-1">${breadcrumbsHtml}</div>
+
+                        <div class="relative w-full md:w-64 order-first md:order-none">
+                            <input type="text" id="global-search-input" placeholder="Пошук (назва)..." class="w-full border rounded-lg pl-8 pr-2 py-1 text-sm" value="${window.state.searchQuery || ''}" oninput="window.state.searchQuery=this.value; window.renderApp()">
+                            <span class="absolute left-2 top-1.5 text-gray-400 text-xs">🔍</span>
                         </div>
 
-                    <div class="breadcrumbs mb-6">${breadcrumbsHtml}</div>
+                        <div class="flex gap-2 flex-wrap justify-end items-center">
+                            <select class="border rounded p-1 text-sm bg-gray-50" onchange="window.state.dashboardSort=this.value; window.renderApp()" title="Сортування">
+                                <option value="alpha_asc" ${window.state.dashboardSort==='alpha_asc'?'selected':''}>А-Я</option>
+                                <option value="alpha_desc" ${window.state.dashboardSort==='alpha_desc'?'selected':''}>Я-А</option>
+                                <option value="date_desc" ${window.state.dashboardSort==='date_desc'?'selected':''}>Нові</option>
+                                <option value="date_asc" ${window.state.dashboardSort==='date_asc'?'selected':''}>Старі</option>
+                            </select>
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-                        ${folders.map(item => `
-                            <div class="folder-card" onclick="window.openFolder('${item.id}')" draggable="true" ondragstart="window.dashDragStart(event, '${item.id}')" ondragover="window.dashDragOver(event)" ondrop="window.dashDrop(event, '${item.id}')">
-                                <span class="folder-icon">${ICONS.folder}</span>
-                                <span class="folder-title">${item.title}</span>
-                                <div class="flex gap-1">
-                                    <button onclick="window.renameItem(event, '${item.id}')" class="spa-btn text-blue-600 hover:bg-blue-50 p-2">${ICONS.edit}</button>
-                                    <button onclick="window.deleteItem(event, '${item.id}')" class="spa-btn text-red-600 hover:bg-red-50 p-2">${ICONS.trash}</button>
-                                </div>
+                            <div class="flex bg-gray-100 rounded p-1 gap-1">
+                                <button onclick="window.state.dashboardView='grid'; window.renderApp()" class="p-1 rounded ${window.state.dashboardView==='grid'?'bg-white shadow text-blue-600':'text-gray-400'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg></button>
+                                <button onclick="window.state.dashboardView='list'; window.renderApp()" class="p-1 rounded ${window.state.dashboardView==='list'?'bg-white shadow text-blue-600':'text-gray-400'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg></button>
                             </div>
-                        `).join('')}
+
+                            <div class="w-px bg-gray-300 h-6 mx-1"></div>
+                            <button onclick="window.exportFullBackup()" class="text-gray-600 hover:text-blue-600" title="Зберегти базу">💾</button>
+                            <button onclick="window.triggerImport()" class="text-gray-600 hover:text-blue-600" title="Відкрити базу">📂</button>
+                            <input type="file" id="import-file-input" style="display: none;" accept=".json" onchange="window.importFullBackup(event)">
+                            <div class="w-px bg-gray-300 h-6 mx-1"></div>
+                            <button onclick="window.createNewFolder()" class="spa-btn spa-btn-secondary text-xs">+ Папка</button>
+                            <button onclick="window.createNewTest()" class="spa-btn spa-btn-primary text-xs">+ Тест</button>
+                        </div>
                     </div>
 
-                    <div class="grid gap-6">
-                        ${tests.map(t => `
-                            <div class="spa-card flex justify-between items-center" draggable="true" ondragstart="window.dashDragStart(event, '${t.id}')">
-                                <div><h2 class="text-xl font-bold">${t.title}</h2><p class="text-gray-500">${t.description || ''}</p></div>
-                                <div class="flex gap-2">
-                                    <button onclick="window.runTest('${t.id}')" class="spa-btn bg-green-600 text-white hover:bg-green-700 border-green-600">Пройти</button>
-                                    <button onclick="window.openTestForSession('${t.id}')" class="spa-btn bg-purple-600 text-white hover:bg-purple-700 border-purple-600" title="Відкрити доступ для учнів">Відкрити тест</button>
-                                    <button onclick="window.editTest('${t.id}')" class="spa-btn spa-btn-secondary">Редагувати</button>
-                                    <button onclick="window.deleteItem(event, '${t.id}')" class="spa-btn text-red-600 hover:bg-red-50 p-2">${ICONS.trash}</button>
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
+                    <div class="${containerClass} mb-8">${folders.map(f => renderItem(f, true)).join('')}</div>
+                    <div class="${containerClass}">${tests.map(t => renderItem(t, false)).join('')}</div>
+                    ${currentItems.length === 0 ? '<div class="text-center text-gray-400 py-10">Нічого не знайдено</div>' : ''}
                 </div>`;
+            
+            // ВІДНОВЛЮЄМО ФОКУС
+            setTimeout(window.restoreSearchFocus, 0);
         };
 
 	// --- CABINET LOGIC ---
@@ -1156,70 +1259,138 @@ window.undoLastAction = function() {
         // 1. Відкрити тест (створити сесію)
         window.openTestForSession = function(testId) {
             const test = window.findItem(testId);
-            
-            // ПИТАННЯ ПРО ПОВНИЙ ЕКРАН
-            const useFullscreen = confirm(
-                `Відкрити тест "${test.title}" для учнів?\n\n` + 
-                `Натисніть "ОК", щоб вимагати ПОВНОЕКРАННИЙ режим (суворий контроль).\n` +
-                `Натисніть "Скасувати", щоб дозволити звичайний режим.`
-            );
-
             const sessionId = uuid();
+            
             const session = {
                 id: sessionId,
                 testId: testId,
                 testTitle: test.title,
                 dateOpened: new Date().toLocaleString(),
                 isActive: true,
-                requiresFullscreen: useFullscreen // Зберігаємо налаштування
+                requiresFullscreen: false // За замовчуванням вимкнено
             };
+            
             window.state.sessions.push(session);
             window.saveTestsToStorage();
             
-            // Переходимо в кабінет
-            alert(`Тест відкрито! Режим: ${useFullscreen ? 'СУВОРИЙ (Повний екран)' : 'Звичайний'}. Переходимо в кабінет.`);
+            // Одразу переходимо в кабінет
             window.state.currentSection = 'cabinet';
             window.renderApp();
         };
 
-        // 2. Рендер Кабінету
+        // Рендер Кабінету
+        // --- ОНОВЛЕНИЙ КАБІНЕТ (СОРТУВАННЯ + ЛІМІТ 10) ---
         window.renderCabinet = function(container) {
-            // Очищаємо попередній таймер
             if (window.cabinetInterval) clearInterval(window.cabinetInterval);
 
             const drawContent = () => {
-                const sessions = window.state.sessions.sort((a,b) => b.isActive - a.isActive);
+                const tab = window.state.cabinetTab || 'active';
+                const query = (window.state.searchQuery || '').toLowerCase();
+
+                // Фільтрація самих журналів (сесій)
+                let sessions = window.state.sessions.filter(s => {
+                    const isArchived = !!s.isArchived;
+                    if (tab === 'active' && isArchived) return false;
+                    if (tab === 'archive' && !isArchived) return false;
+                    if (query) {
+                        return s.testTitle.toLowerCase().includes(query) || s.id.includes(query);
+                    }
+                    return true;
+                });
+
+                // Сортування журналів (спочатку активні, потім за датою)
+                sessions.sort((a,b) => {
+                    if (a.isActive !== b.isActive) return b.isActive - a.isActive;
+                    return new Date(b.dateOpened) - new Date(a.dateOpened);
+                });
+
                 container.dataset.resultsCount = window.state.results.length;
+                const tabClassBase = "pb-2 px-4 font-bold border-b-2 cursor-pointer transition-colors";
+                const activeTabClass = "border-blue-600 text-blue-600";
+                const inactiveTabClass = "border-transparent text-gray-500 hover:text-gray-700";
 
                 container.innerHTML = `
                     <div class="max-w-6xl mx-auto p-6">
                         <div class="flex gap-4 mb-8 border-b pb-2">
-                        <button onclick="window.switchSection('tests')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Мої тести</button>
-                        <button onclick="window.switchSection('bank')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Банк завдань</button>
-                        <button onclick="window.switchSection('cabinet')" class="text-xl font-bold border-b-2 border-[#FF2938] pb-2 px-4 text-[#FF2938]">Кабінет тестування</button>
-                    </div>
-
-                        <div class="flex justify-between items-center mb-6">
-                            <h2 class="text-2xl font-bold text-gray-800">Журнал тестувань</h2>
-                            <span class="text-sm text-green-600 animate-pulse">● Автооновлення увімкнено</span>
+                            <button onclick="window.clearSearch(); window.switchSection('tests')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Мої тести</button>
+                            <button onclick="window.clearSearch(); window.switchSection('bank')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Банк завдань</button>
+                            <button onclick="window.clearSearch(); window.switchSection('cabinet')" class="text-xl font-bold border-b-2 border-[#FF2938] pb-2 px-4 text-[#FF2938]">Кабінет тестування</button>
                         </div>
 
-                        ${sessions.length === 0 ? '<p class="text-gray-500">Поки що немає відкритих тестів.</p>' : ''}
+                        <div class="flex flex-col md:flex-row justify-between items-end mb-6 gap-4">
+                            <div>
+                                <h2 class="text-2xl font-bold text-gray-800 mb-4">Журнал тестувань</h2>
+                                <div class="flex gap-2">
+                                    <button onclick="window.state.cabinetTab='active'; window.renderApp()" class="${tabClassBase} ${tab === 'active' ? activeTabClass : inactiveTabClass}">Активні журнали</button>
+                                    <button onclick="window.state.cabinetTab='archive'; window.renderApp()" class="${tabClassBase} ${tab === 'archive' ? activeTabClass : inactiveTabClass}">📁 Архів</button>
+                                </div>
+                            </div>
+                            <div class="relative w-full md:w-64">
+                                <input type="text" id="global-search-input" placeholder="Пошук журналу..." class="w-full border rounded-lg pl-8 pr-2 py-2" value="${window.state.searchQuery || ''}" oninput="window.state.searchQuery=this.value; window.renderApp()">
+                                <span class="absolute left-2 top-2 text-gray-400">🔍</span>
+                            </div>
+                        </div>
+
+                        ${sessions.length === 0 ? `<div class="text-center py-10 text-gray-400 bg-gray-50 rounded border border-dashed">У цьому розділі нічого не знайдено</div>` : ''}
 
                         <div class="grid gap-8">
                             ${sessions.map(s => {
-                                const finishedResults = window.state.results.filter(r => r.sessionId === s.id);
+                                // 1. Отримуємо налаштування UI для цієї сесії
+                                const uiState = (window.state.cabinetUI && window.state.cabinetUI[s.id]) 
+                                    ? window.state.cabinetUI[s.id] 
+                                    : { sort: 'date', asc: false, expanded: false };
+
+                                // 2. Беремо результати
+                                let finishedResults = window.state.results.filter(r => r.sessionId === s.id);
+                                const totalCount = finishedResults.length;
+
+                                // 3. СОРТУВАННЯ ТАБЛИЦІ
+                                finishedResults.sort((a, b) => {
+                                    let valA, valB;
+                                    
+                                    if (uiState.sort === 'name') {
+                                        valA = a.studentName.toLowerCase(); valB = b.studentName.toLowerCase();
+                                    } else if (uiState.sort === 'score') {
+                                        valA = a.score; valB = b.score;
+                                    } else { // date
+                                        // Перетворення дати "dd.mm.yyyy, hh:mm:ss" в об'єкт для сортування складне,
+                                        // тому краще сортувати за timestamp (якщо ми його додали), або просто як рядок (не ідеально), 
+                                        // або використати внутрішній ID який містить час
+                                        // Для надійності: припустимо, що timestamp це рядок дати. 
+                                        // Найкращий варіант: у results додати поле createdTimestamp = Date.now().
+                                        // Але спробуємо розпарсити існуючий рядок або взяти ID.
+                                        valA = a.id; valB = b.id; // ID uuid v4 не сортується за часом, але у нас є timestamp string.
+                                        // Спроба сортування за рядком дати (краще ніж нічого)
+                                        valA = a.timestamp; valB = b.timestamp;
+                                    }
+
+                                    if (valA < valB) return uiState.asc ? -1 : 1;
+                                    if (valA > valB) return uiState.asc ? 1 : -1;
+                                    return 0;
+                                });
+
+                                // 4. ЛІМІТ (10 штук)
+                                const showMoreBtn = (!uiState.expanded && totalCount > 10);
+                                const displayedResults = uiState.expanded ? finishedResults : finishedResults.slice(0, 10);
+
+                                // -- Активні рядки (хто пише зараз) --
                                 let activeRows = '';
-                                
+                                const testItem = window.findItem(s.testId);
+                                let totalQuestions = 0;
+                                if(testItem) totalQuestions = testItem.blocks.filter(b => b.number).length;
+
                                 if (s.isActive) {
                                     const rawProgress = localStorage.getItem('nmtProgress_' + s.id);
                                     if (rawProgress) {
                                         try {
                                             const p = JSON.parse(rawProgress);
                                             const alreadyFinished = finishedResults.find(r => r.studentName === p.studentName);
-                                            
                                             if (!alreadyFinished) {
                                                 const startTime = new Date(p.startTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                                                const v = p.violations || 0;
+                                                let savedCount = 0;
+                                                if(p.answers) savedCount = Object.values(p.answers).filter(ans => ans.final).length;
+
                                                 activeRows = `
                                                     <tr class="border-b bg-yellow-50 animate-pulse">
                                                         <td class="p-2 font-bold text-gray-700">
@@ -1227,9 +1398,12 @@ window.undoLastAction = function() {
                                                             <span class="ml-2 text-xs bg-yellow-200 text-yellow-800 px-1 rounded">ВИКОНУЄ</span>
                                                         </td>
                                                         <td class="p-2 text-gray-500">Розпочато о ${startTime}</td>
-                                                        <td class="p-2 text-gray-400 italic">в процесі...</td>
+                                                        <td class="p-2 text-gray-700">
+                                                            <div class="font-bold">✅ Збережено: ${savedCount} / ${totalQuestions}</div>
+                                                            ${v > 0 ? `<div class="text-red-600 font-bold mt-1 text-xs">⚠️ Виходів: ${v}</div>` : ''}
+                                                        </td>
                                                         <td class="p-2 flex gap-3">
-                                                            <button onclick="window.deleteActiveAttempt('${s.id}')" class="text-red-600 hover:underline font-bold" title="Анулювати спробу">✕ Видалити</button>
+                                                            <button onclick="window.deleteActiveAttempt('${s.id}')" class="text-red-600 hover:underline font-bold text-xs" title="Анулювати спробу">✕ Анулювати</button>
                                                         </td>
                                                     </tr>
                                                 `;
@@ -1239,27 +1413,42 @@ window.undoLastAction = function() {
                                 }
 
                                 const link = `${window.location.href.split('?')[0]}?student_session=${s.id}`;
+                                const fsBtnClass = s.requiresFullscreen ? "bg-purple-100 text-purple-700 border-purple-300 hover:bg-purple-200" : "bg-gray-100 text-gray-500 border-gray-300 hover:bg-gray-200";
+                                const fsBtnText = s.requiresFullscreen ? "🖥️ Повний екран: ВКЛ" : "🖥️ Повний екран: ВИКЛ";
+
+                                // Допоміжна функція для іконки сортування
+                                const getSortIcon = (col) => {
+                                    if (uiState.sort !== col) return '<span class="text-gray-300 opacity-50 ml-1">↕</span>';
+                                    return uiState.asc ? '<span class="text-blue-600 ml-1">▲</span>' : '<span class="text-blue-600 ml-1">▼</span>';
+                                };
 
                                 return `
-                                <div class="bg-white border ${s.isActive ? 'border-l-4 border-l-green-500' : 'border-gray-200 opacity-75'} rounded shadow p-6">
+                                <div class="bg-white border ${s.isActive ? 'border-l-4 border-l-green-500' : 'border-gray-300 bg-gray-50'} rounded shadow p-6 relative">
+                                    ${s.isArchived ? '<div class="absolute top-2 right-2 text-xs text-gray-400 font-bold border px-2 rounded">АРХІВ</div>' : ''}
+                                    
                                     <div class="flex justify-between items-start mb-4">
                                         <div>
                                             <h3 class="text-xl font-bold flex items-center gap-2">
                                                 ${s.testTitle}
                                                 ${s.isActive 
                                                     ? '<span class="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">ВІДКРИТО</span>' 
-                                                    : '<span class="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded">ЗАВЕРШЕНО</span>'}
+                                                    : '<span class="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded">ЗАВЕРШЕНО</span>'}
                                             </h3>
                                             <p class="text-sm text-gray-500">Створено: ${s.dateOpened}</p>
                                         </div>
                                         <div class="flex flex-col gap-2 items-end">
-                                            <button onclick="window.showSessionStatistics('${s.id}')" class="btn-brand bg-purple-600 border-purple-600 hover:bg-purple-700 py-1 px-3 text-sm flex items-center gap-1">📊 Статистика завдань</button>
-                                            ${s.isActive ? `
-                                                <button onclick="window.copyLink('${link}')" class="text-blue-600 hover:underline text-sm font-bold">📋 Копіювати посилання</button>
-                                                <button onclick="window.startStudentMode('${s.id}')" class="btn-brand bg-blue-600 border-blue-600 hover:bg-blue-700 py-1 px-3 text-sm">👤 Запустити тут</button>
-                                                <button onclick="window.closeSession('${s.id}')" class="text-red-600 hover:underline text-sm mt-2">🔒 Закрити тест</button>
+                                            <button onclick="window.showSessionStatistics('${s.id}')" class="btn-brand bg-blue-600 border-blue-600 hover:bg-blue-700 py-1 px-3 text-sm flex items-center gap-1">📊 Статистика</button>
+                                            
+                                            ${!s.isArchived ? `
+                                                ${s.isActive ? `
+                                                    <button onclick="window.toggleSessionFullscreen('${s.id}')" class="text-xs font-bold border px-2 py-1 rounded mb-1 transition-colors ${fsBtnClass}">${fsBtnText}</button>
+                                                    <button onclick="window.copyLink('${link}')" class="text-blue-600 hover:underline text-sm font-bold">📋 Копіювати посилання</button>
+                                                    <button onclick="window.closeSession('${s.id}')" class="text-red-600 hover:underline text-sm mt-1">🔒 Закрити тест</button>
+                                                ` : ''}
+                                                <button onclick="window.archiveSession('${s.id}')" class="text-gray-500 hover:text-blue-600 text-sm mt-2 border border-gray-300 px-2 rounded">📥 В архів</button>
                                             ` : `
-                                                <button onclick="window.deleteSession('${s.id}')" class="text-red-600 hover:underline text-sm">🗑️ Видалити журнал</button>
+                                                <button onclick="window.unarchiveSession('${s.id}')" class="text-blue-600 hover:underline text-sm font-bold">♻️ Відновити з архіву</button>
+                                                <button onclick="window.deleteSession('${s.id}')" class="text-red-600 hover:underline text-sm mt-2">🗑️ Видалити назавжди</button>
                                             `}
                                         </div>
                                     </div>
@@ -1267,28 +1456,46 @@ window.undoLastAction = function() {
                                     <div class="overflow-x-auto">
                                         <table class="w-full text-left text-sm border-collapse">
                                             <thead>
-                                                <tr class="bg-gray-50 border-b">
-                                                    <th class="p-2">Учень</th>
-                                                    <th class="p-2">Дата</th>
-                                                    <th class="p-2">Результат</th>
+                                                <tr class="bg-gray-100 border-b select-none">
+                                                    <th class="p-2 cursor-pointer hover:bg-gray-200 transition-colors" onclick="window.sortCabinetTable('${s.id}', 'name')">Учень ${getSortIcon('name')}</th>
+                                                    <th class="p-2 cursor-pointer hover:bg-gray-200 transition-colors" onclick="window.sortCabinetTable('${s.id}', 'date')">Дата ${getSortIcon('date')}</th>
+                                                    <th class="p-2 cursor-pointer hover:bg-gray-200 transition-colors" onclick="window.sortCabinetTable('${s.id}', 'score')">Результат ${getSortIcon('score')}</th>
                                                     <th class="p-2">Дії</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 ${activeRows}
-                                                ${finishedResults.length > 0 ? finishedResults.map(res => `
-                                                    <tr class="border-b hover:bg-gray-50">
+                                                ${displayedResults.length > 0 ? displayedResults.map(res => `
+                                                    <tr class="border-b hover:bg-white">
                                                         <td class="p-2 font-bold">${res.studentName}</td>
                                                         <td class="p-2 text-gray-500">${res.timestamp}</td>
-                                                        <td class="p-2"><span class="font-bold text-lg">${res.score}</span> / ${res.maxScore}</td>
-                                                        <td class="p-2 flex gap-3">
-                                                            <button onclick="window.viewStudentDetails('${res.id}')" class="text-blue-600 hover:underline font-bold">👁 Перегляд</button>
-                                                            <button onclick="window.deleteStudentResult('${res.id}')" class="text-red-600 hover:underline" title="Видалити">🗑</button>
+                                                        <td class="p-2">
+                                                            <span class="font-bold text-lg">${res.score}</span> / ${res.maxScore}
+                                                        </td>
+                                                        <td class="p-2 flex gap-2"> 
+                                                            <button onclick="window.viewStudentDetails('${res.id}')" class="text-blue-600 hover:underline font-bold text-xs">👁 Перегляд</button>
+                                                            ${res.violations > 0 ? `<span class="text-xs text-red-600 font-bold mr-2 border border-red-200 bg-red-50 px-1 rounded flex items-center" title="Кількість виходів з повного екрану">⚠️ ${res.violations}</span>` : ''}
+                                                            <button onclick="window.editStudentScore('${res.id}')" class="text-orange-600 hover:underline font-bold text-xs" title="Змінити бал вручну">✎ Бал</button>
+                                                            <button onclick="window.deleteStudentResult('${res.id}')" class="text-red-600 hover:underline text-xs" title="Видалити">🗑</button>
                                                         </td>
                                                     </tr>
-                                                `).join('') : (activeRows ? '' : `<tr><td colspan="4" class="p-4 text-center text-gray-400 italic">Ще ніхто не завершив тест</td></tr>`)}
+                                                `).join('') : (activeRows ? '' : `<tr><td colspan="4" class="p-4 text-center text-gray-400 italic">Немає результатів</td></tr>`)}
                                             </tbody>
                                         </table>
+                                        
+                                        ${showMoreBtn ? `
+                                            <div class="text-center mt-2">
+                                                <button onclick="window.toggleCabinetExpansion('${s.id}')" class="text-blue-600 font-bold hover:underline text-sm">
+                                                    ⬇ Показати всіх (${totalCount})
+                                                </button>
+                                            </div>
+                                        ` : (totalCount > 10 && uiState.expanded ? `
+                                            <div class="text-center mt-2">
+                                                <button onclick="window.toggleCabinetExpansion('${s.id}')" class="text-gray-500 hover:underline text-sm">
+                                                    ⬆ Згорнути
+                                                </button>
+                                            </div>
+                                        ` : '')}
                                     </div>
                                 </div>
                                 `;
@@ -1296,25 +1503,21 @@ window.undoLastAction = function() {
                         </div>
                     </div>
                 `;
+                setTimeout(window.restoreSearchFocus, 0);
             };
 
             drawContent();
 
             window.cabinetInterval = setInterval(() => {
-                // ВИПРАВЛЕННЯ: Тепер перевіряємо ще й window.state.view
-                // Якщо ми в режимі 'runner' (перегляд студента) або 'statistics' (хоча статистика в модалці),
-                // таймер не повинен працювати.
                 if (window.state.currentSection !== 'cabinet' || window.state.view !== 'dashboard') {
                     clearInterval(window.cabinetInterval);
                     return;
                 }
-                
                 const rawData = localStorage.getItem('nmtCabinetData');
                 if (rawData) {
                     const parsed = JSON.parse(rawData);
                     const newResults = parsed.results || [];
                     const hasActiveSessions = window.state.sessions.some(s => s.isActive);
-                    
                     if (newResults.length !== window.state.results.length || hasActiveSessions) {
                         window.state.results = newResults;
                         window.state.sessions = parsed.sessions || [];
@@ -1331,6 +1534,16 @@ window.undoLastAction = function() {
                 window.saveTestsToStorage();
                 window.renderApp();
             }
+        };
+
+	// Видалення активної спроби 
+        window.deleteActiveAttempt = function(sessionId) {
+            if(confirm("Ви дійсно хочете анулювати цю активну спробу? Прогрес учня буде втрачено.")) {
+                // Видаляємо прогрес з пам'яті
+                localStorage.removeItem('nmtProgress_' + sessionId);
+                // Оновлюємо вигляд сторінки
+                window.renderApp();
+            }
         };	
 
         window.closeSession = function(sid) {
@@ -1339,6 +1552,16 @@ window.undoLastAction = function() {
                 if(s) s.isActive = false;
                 window.saveTestsToStorage();
                 window.renderApp();
+            }
+        };
+
+	// Перемикач повного екрану в Кабінеті ---
+        window.toggleSessionFullscreen = function(sessionId) {
+            const s = window.state.sessions.find(x => x.id === sessionId);
+            if(s) {
+                s.requiresFullscreen = !s.requiresFullscreen;
+                window.saveTestsToStorage();
+                window.renderApp(); // Оновлюємо вигляд кнопки
             }
         };
 
@@ -1383,53 +1606,104 @@ window.undoLastAction = function() {
             const answers = window.state.runnerState.answers;
             const test = window.findItem(window.state.activeTestId);
 
-            // Чекаємо трохи, щоб HTML точно встиг намалюватися
+            const formatDuration = (ms) => {
+                if (!ms) return 'не визначено';
+                const totalSeconds = Math.floor(ms / 1000);
+                if (totalSeconds < 60) return `${totalSeconds} сек`;
+                const m = Math.floor(totalSeconds / 60);
+                const s = totalSeconds % 60;
+                return `${m} хв ${s} сек`;
+            };
+
             setTimeout(() => {
                 test.blocks.forEach(b => {
-                    // 1. Показуємо пояснення
+                    // 1. Пояснення та Правильні відповіді
                     const an = document.getElementById(`an-${b.id}`);
                     const hasExplanation = b.explanation && b.explanation.replace(/<[^>]*>/g, '').trim().length > 0;
-                    if(an && hasExplanation) an.style.display = 'block';
-                    else if (an) an.style.display = 'none';
                     
-                    // 2. Блокуємо інпути
+                    if (an) {
+                        if (hasExplanation) {
+                            if (!an.querySelector('details')) {
+                                const content = b.explanation;
+                                const originalInner = an.querySelector('.correct-answer-box').outerHTML;
+                                an.innerHTML = `
+                                    <div class="mb-2">${originalInner}</div>
+                                    <details class="bg-blue-50 border border-blue-200 rounded p-2">
+                                        <summary class="cursor-pointer font-bold text-blue-600 hover:text-blue-800 select-none">👁 Подивитися пояснення</summary>
+                                        <div class="explanation-box mt-2 border-t pt-2">${content}</div>
+                                    </details>
+                                `;
+                            }
+                            an.style.display = 'block';
+                        } else {
+                            // Показуємо блок правильних відповідей, навіть якщо пояснення немає
+                            an.style.display = 'block';
+                            const expBox = an.querySelector('.explanation-box');
+                            if(expBox) expBox.style.display = 'none';
+                        }
+                    }
+
+                    // 2. Блокування
                     const blk = document.getElementById(`blk-${b.id}`);
                     if(blk) blk.querySelectorAll('input, button, select').forEach(el => el.disabled = true);
                     
-                    // 3. Підсвічуємо відповіді користувача
-                    const userAns = answers[b.id]?.final;
+                    // 3. Таймінг
+                    const answerData = answers[b.id];
+                    if (answerData && answerData.duration && blk && !blk.querySelector('.time-info-badge')) {
+                         const durationText = formatDuration(answerData.duration);
+                         const header = blk.querySelector('.problem-header');
+                         const badgeHtml = `<div class="time-info-badge mb-3 text-sm text-blue-800 bg-blue-50 border border-blue-100 px-3 py-1 rounded-md inline-block">⏱️ Час виконання: <b>${durationText}</b></div>`;
+                         if (header) header.insertAdjacentHTML('afterend', badgeHtml);
+                         else blk.insertAdjacentHTML('afterbegin', badgeHtml);
+                    }
 
-                    if (b.type === 'single' && userAns) {
-                        // userAns - це ID варіанту
+                    const userAns = answerData?.final;
+
+                    // 4. ПІДСВІТКА: Dropdown (Виправлена логіка)
+                    if (b.type === 'dropdown') {
+                        if (b.dropdowns) {
+                            b.dropdowns.forEach(dd => {
+                                const sel = document.getElementById(`dd-input-${b.id}-${dd.id}`);
+                                if(sel) {
+                                    // Відновлюємо вибір або пустий рядок
+                                    const val = userAns ? userAns[dd.id] : '';
+                                    sel.value = val;
+                                    
+                                    const correctVal = dd.correctId;
+                                    
+                                    // Скидаємо старі стилі
+                                    sel.style.backgroundColor = ''; 
+                                    sel.style.border = '';
+                                    
+                                    if (val === correctVal) {
+                                        sel.style.backgroundColor = '#dcfce7'; // Зелений
+                                        sel.style.border = '2px solid #22c55e';
+                                    } else {
+                                        sel.style.backgroundColor = '#fee2e2'; // Червоний
+                                        sel.style.border = '2px solid #ef4444';
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    // Інші типи
+                    else if (b.type === 'single' && userAns) {
                         const opt = document.getElementById(`opt-${userAns}`);
                         if(opt) {
-                            const radio = opt.querySelector('input[type="radio"]');
-                            if(radio) radio.checked = true;
+                            opt.querySelector('input').checked = true;
                             opt.classList.add('selected');
-                            // Фарбуємо в червоний, якщо неправильно (тільки якщо вибрано)
-                            if (userAns !== b.correctId) {
-                                opt.style.backgroundColor = '#fee2e2'; 
-                                opt.style.borderColor = '#ef4444';
-                            } else {
-                                opt.style.backgroundColor = '#dcfce7'; // Зелений, якщо правильно
-                                opt.style.borderColor = '#22c55e';
-                            }
+                            if (userAns !== b.correctId) { opt.style.backgroundColor = '#fee2e2'; opt.style.borderColor = '#ef4444'; }
+                            else { opt.style.backgroundColor = '#dcfce7'; opt.style.borderColor = '#22c55e'; }
                         }
                     }
                     else if (b.type === 'multiple' && Array.isArray(userAns)) {
                         userAns.forEach(oid => {
                              const opt = document.getElementById(`opt-${oid}`);
                              if(opt) {
-                                 const checkbox = opt.querySelector('input[type="checkbox"]');
-                                 if(checkbox) checkbox.checked = true;
+                                 opt.querySelector('input').checked = true;
                                  opt.classList.add('selected');
-                                 
-                                 // Перевірка на правильність конкретного пункту
-                                 if (b.correctIds && !b.correctIds.includes(oid)) {
-                                    opt.style.backgroundColor = '#fee2e2'; // Червоний, якщо зайвий
-                                 } else {
-                                    opt.style.backgroundColor = '#dcfce7'; // Зелений, якщо правильно вгадав
-                                 }
+                                 if (b.correctIds && !b.correctIds.includes(oid)) opt.style.backgroundColor = '#fee2e2';
+                                 else opt.style.backgroundColor = '#dcfce7';
                              }
                         });
                     }
@@ -1439,15 +1713,10 @@ window.undoLastAction = function() {
                             const val = userAns[item.id];
                             if(input && val !== undefined) {
                                 input.value = val;
-                                let cleanUser = val.toString().replace(',', '.').trim();
-                                let cleanCorrect = item.correctAnswer.toString().replace(',', '.').trim();
-                                if (cleanUser != cleanCorrect) {
-                                    input.style.backgroundColor = '#fee2e2';
-                                    input.style.borderColor = 'red';
-                                } else {
-                                    input.style.backgroundColor = '#ecfdf5';
-                                    input.style.borderColor = 'green';
-                                }
+                                let cUser = val.toString().replace(',', '.').trim();
+                                let cCorr = item.correctAnswer.toString().replace(',', '.').trim();
+                                if (cUser != cCorr) { input.style.backgroundColor = '#fee2e2'; input.style.borderColor = 'red'; }
+                                else { input.style.backgroundColor = '#ecfdf5'; input.style.borderColor = 'green'; }
                             }
                         });
                     }
@@ -1455,16 +1724,10 @@ window.undoLastAction = function() {
                         const input = document.getElementById(`in-${b.id}`);
                         if(input) {
                             input.value = userAns;
-                            let cleanUser = userAns.toString().replace(',', '.').trim();
-                            let cleanCorrect = b.correctAnswer.toString().replace(',', '.').trim();
-                            if(cleanUser != cleanCorrect) input.style.backgroundColor = '#fee2e2';
+                            let cUser = userAns.toString().replace(',', '.').trim();
+                            let cCorr = b.correctAnswer.toString().replace(',', '.').trim();
+                            if(cUser != cCorr) input.style.backgroundColor = '#fee2e2';
                             else input.style.backgroundColor = '#ecfdf5';
-                        }
-                    }
-                    else if (b.type === 'dropdown' && userAns) {
-                        for(const [ddId, val] of Object.entries(userAns)) {
-                            const sel = document.getElementById(`dd-input-${b.id}-${ddId}`);
-                            if(sel) sel.value = val;
                         }
                     }
                     else if (b.type === 'matching' && userAns) {
@@ -1475,9 +1738,13 @@ window.undoLastAction = function() {
                         }
                     }
                 });
-            }, 200); // Збільшена затримка для надійності
+
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    window.MathJax.typesetPromise();
+                }
+
+            }, 300);
             
-            // Приховуємо панель таймера
             const topPanel = document.getElementById('top-panel');
             if(topPanel) topPanel.classList.add('hidden-panel');
             document.body.style.paddingTop = '60px';
@@ -1647,7 +1914,8 @@ window.undoLastAction = function() {
                         id: uuid(),
                         type: 'folder',
                         parentId: window.state.currentFolderId,
-                        title: folderName
+                        title: folderName,
+                        createdAt: Date.now() // Запам'ятовуємо час
                     };
                     window.state.items.push(newFolder);
                     window.saveTestsToStorage();
@@ -1682,7 +1950,8 @@ window.undoLastAction = function() {
                 preTestDescription: 'Опис перед тестом...',
                 infoPanelContent: 'Національний мультипредметний тест обмежений у часі. Таймер праворуч показує, скільки часу залишилося до кінця роботи. Вибравши відповідь на завдання, не забудьте натиснути на "Зберегти відповідь" для кожного завдання. Якщо Ви цього не зробите, відповідь не буде збережено і зараховано. Перш ніж натиснути на "Завершити роботу над тестом", перевірте, чи зберегли всі надані відповіді.',
                 referenceUrl: '', 
-                timeLimit: 3600, 
+                timeLimit: 3600,
+		createdAt: Date.now(), // Запам'ятовуємо час 
                 blocks: [] 
             };
             window.state.items.push(newTest);
@@ -1698,12 +1967,22 @@ window.undoLastAction = function() {
             if (!item) return;
 
             if (item.type === 'test') {
-                window.showModal('Видалення тесту', `Видалити тест "${item.title}"?`, () => {
+                window.showModal('Видалення тесту', `Видалити тест "${item.title}"?<br><span class="text-red-600 text-sm">Це також видалить усі активні сесії та результати цього тесту в Кабінеті!</span>`, () => {
+                    // 1. Видаляємо сам тест
                     window.state.items = window.state.items.filter(i => i.id !== id);
+                    
+                    // 2. Видаляємо сесії цього тесту
+                    const sessionsToDelete = window.state.sessions.filter(s => s.testId === id).map(s => s.id);
+                    window.state.sessions = window.state.sessions.filter(s => s.testId !== id);
+                    
+                    // 3. Видаляємо результати цих сесій
+                    window.state.results = window.state.results.filter(r => !sessionsToDelete.includes(r.sessionId));
+
                     window.saveTestsToStorage();
                     window.renderApp();
                 });
             } else if (item.type === 'folder') {
+                // Для папок логіка складніша (рекурсія), залишаємо базове видалення вмісту
                 const idsToDelete = [id];
                 const findChildrenRecursive = (parentId) => {
                     const children = window.state.items.filter(i => i.parentId === parentId);
@@ -1717,6 +1996,8 @@ window.undoLastAction = function() {
                 
                 findChildrenRecursive(id);
                 
+                // Перед видаленням треба знайти всі тести всередині цих папок і теж почистити сесії
+                // Для спрощення тут видаляємо тільки структуру, але краще попереджати користувача
                 window.showModal('Видалення папки', `Видалити папку "${item.title}" та увесь її вміст (${idsToDelete.length - 1} елементів)?`, () => {
                     window.state.items = window.state.items.filter(i => !idsToDelete.includes(i.id));
                     window.saveTestsToStorage();
@@ -3082,50 +3363,96 @@ window.formatColumns = function(cols) {
                 answers: window.state.runnerState.answers || {}, 
                 timerVisible: true,
                 startTime: startTime,
-                currentPage: window.state.runnerState.currentPage || 0 // Зберігаємо поточну сторінку
+                lastActionTime: window.state.runnerState.lastActionTime || startTime,
+                currentPage: window.state.runnerState.currentPage || 0,
+                violations: window.state.runnerState.violations || 0
             };
             
+            // Спочатку зберігаємо, щоб створити файл прогресу
             window.saveProgress();
             window.renderApp();
             
-            // --- ЛОГІКА ТАЙМЕРА (ЗМІНЕНО) ---
-            // Запускаємо таймер тільки якщо час > 0
             if (test.timeLimit > 0) {
                 const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
                 const remaining = test.timeLimit - elapsedSeconds;
                 window.startTimer(remaining > 0 ? remaining : 0);
             } else {
-                // Якщо немає таймера, очищаємо будь-який старий інтервал
                 if (window.timerInterval) clearInterval(window.timerInterval);
             }
 
-            // --- ЛОГІКА ПОВНОГО ЕКРАНУ ---
+            // --- НОВЕ: "ВАРТОВИЙ" (Синхронізація з вчителем) ---
+            if (window.statusCheckInterval) clearInterval(window.statusCheckInterval);
+            
+            window.statusCheckInterval = setInterval(() => {
+                if (window.state.runnerState.isFinished) {
+                    clearInterval(window.statusCheckInterval);
+                    return;
+                }
+
+                // 1. Перевірка: чи не видалили прогрес (Анулювання)
+                const currentProgress = localStorage.getItem('nmtProgress_' + window.state.activeSessionId);
+                
+                // 2. Перевірка: чи не закрили сесію повністю
+                const cabinetRaw = localStorage.getItem('nmtCabinetData');
+                let sessionValid = false;
+                if (cabinetRaw) {
+                    const cab = JSON.parse(cabinetRaw);
+                    const s = cab.sessions.find(x => x.id === window.state.activeSessionId);
+                    if (s && s.isActive) sessionValid = true;
+                }
+
+                // ЯКЩО ЩОСЬ НЕ ТАК — ВИКИДАЄМО
+                if (currentProgress === null || !sessionValid) {
+                    clearInterval(window.statusCheckInterval);
+                    clearInterval(window.timerInterval);
+                    
+                    // Блокуємо екран
+                    document.getElementById('app').innerHTML = `
+                        <div class="min-h-screen flex items-center justify-center bg-red-50">
+                            <div class="text-center p-8 bg-white rounded-xl shadow-2xl border-2 border-red-500 max-w-md">
+                                <div class="text-6xl mb-4">🛑</div>
+                                <h1 class="text-2xl font-bold text-red-700 mb-2">Тестування припинено</h1>
+                                <p class="text-gray-600 mb-6">Вашу спробу було анульовано вчителем або сесію закрито.</p>
+                                <button onclick="window.location.reload()" class="btn-brand bg-gray-600">На головну</button>
+                            </div>
+                        </div>
+                    `;
+                }
+            }, 2000); // Перевіряємо кожні 2 секунди
+
+            // --- ПОВНИЙ ЕКРАН (Без змін, тільки вставка) ---
             if (session && session.requiresFullscreen && !window.state.isReviewMode) {
-                // ... (тут ваш старий код для повного екрану, без змін) ...
+                if (window.state.fullscreenListener) document.removeEventListener('fullscreenchange', window.state.fullscreenListener);
+
                 const checkFullscreen = () => {
                     if (window.state.runnerState.isFinished) return;
-
                     const overlayId = 'fullscreen-pause-overlay';
                     let overlay = document.getElementById(overlayId);
 
                     if (!document.fullscreenElement) {
+                        window.state.runnerState.violations++;
+                        window.saveProgress();
+
                         if (!overlay) {
                             overlay = document.createElement('div');
                             overlay.id = overlayId;
-                            overlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.95); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;';
+                            overlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.98); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;';
                             overlay.innerHTML = `
-                                <h2 class="text-2xl font-bold text-red-600 mb-4">Тест призупинено!</h2>
-                                <p class="mb-6 text-gray-700 max-w-md">Ви вийшли з повноекранного режиму. Тестування можливе лише в повному екрані.</p>
-                                <button id="resume-fs-btn" class="btn-brand text-lg py-3 px-8">Повернутися до тесту ▶</button>
+                                <h2 class="text-3xl font-bold text-gray-800 mb-4">Тест призупинено</h2>
+                                <p class="mb-6 text-gray-600 text-lg">Ви вийшли з повноекранного режиму. Що ви хочете зробити?</p>
+                                <div class="flex gap-4">
+                                    <button id="resume-fs-btn" class="btn-brand text-lg py-3 px-8 shadow-lg">Продовжити виконання ▶</button>
+                                    <button id="finish-fs-btn" class="btn-brand bg-gray-500 border-gray-500 hover:bg-gray-600 text-lg py-3 px-8 shadow-lg">Завершити тест ⏹</button>
+                                </div>
                             `;
                             document.body.appendChild(overlay);
                             
                             document.getElementById('resume-fs-btn').onclick = function() {
-                                document.documentElement.requestFullscreen().then(() => {
-                                    overlay.style.display = 'none';
-                                }).catch(() => {
-                                    alert("Не вдалося відновити повний екран. Спробуйте ще раз.");
-                                });
+                                document.documentElement.requestFullscreen().then(() => { overlay.style.display = 'none'; }).catch(() => { alert("Натисніть F11 або дозвольте повний екран."); });
+                            };
+                            document.getElementById('finish-fs-btn').onclick = function() {
+                                overlay.style.display = 'none';
+                                window.finishTest(true);
                             };
                         }
                         overlay.style.display = 'flex';
@@ -3133,7 +3460,6 @@ window.formatColumns = function(cols) {
                         if (overlay) overlay.style.display = 'none';
                     }
                 };
-
                 document.addEventListener('fullscreenchange', checkFullscreen);
                 window.state.fullscreenListener = checkFullscreen; 
             }
@@ -3309,12 +3635,9 @@ window.formatColumns = function(cols) {
 
 	window.saveStructured = function(id) {
             if(window.state.runnerState.isFinished) return;
-            
-            // Збираємо всі інпути цього блоку
             const inputs = document.querySelectorAll(`[id^="in-${id}-"]`);
             const answers = {};
             let allFilled = true;
-
             inputs.forEach(input => {
                 const itemId = input.dataset.itemid;
                 const val = input.value.trim();
@@ -3323,13 +3646,12 @@ window.formatColumns = function(cols) {
             });
 
             if(allFilled) { 
-                window.state.runnerState.answers[id] = { final: answers }; 
+                const dur = window.getTaskDuration();
+                const prevDur = window.state.runnerState.answers[id]?.duration || 0;
+
+                window.state.runnerState.answers[id] = { final: answers, timestamp: Date.now(), duration: prevDur + dur }; 
                 window.markSaved(id); 
-            } else { 
-                const fb=document.getElementById(`fb-${id}`); 
-                fb.innerText="Заповніть відповіді на всі підпитання!"; 
-                fb.style.display='block'; 
-            }
+            } else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Заповніть відповіді на всі підпитання!"; fb.style.display='block'; }
         };
 
         window.changePage = function(delta) {
@@ -3497,22 +3819,29 @@ window.formatColumns = function(cols) {
                         b.dropdowns.forEach(dd => {
                             const placeholderRegex = new RegExp(`<span[^>]*data-id="${dd.id}"[^>]*>.*?</span>`, 'g');
                             const optionsHtml = dd.options.map(opt => `<option value="${opt.id}">${opt.text}</option>`).join('');
-                            const selectHtml = `<select class="runner-select" id="dd-input-${b.id}-${dd.id}" onchange="window.resetBtn('${b.id}')">${optionsHtml}</select>`;
+                            const selectHtml = `<select class="runner-select" id="dd-input-${b.id}-${dd.id}" onchange="window.resetBtn('${b.id}')"><option value="" disabled selected>Оберіть...</option>${optionsHtml}</select>`;
                             questionHtml = questionHtml.replace(placeholderRegex, selectHtml);
                         });
                     }
+                    
+                    // ГЕНЕРАЦІЯ БЛОКУ ПРАВИЛЬНИХ ВІДПОВІДЕЙ
                     let correctHtml = '<ul class="list-none text-left p-0">';
                     if(b.dropdowns) {
                         b.dropdowns.forEach(dd => {
                             const correctOpt = dd.options.find(o => o.id === dd.correctId);
-                            correctHtml += `<li class="mb-1"><b>${dd.name}:</b> ${correctOpt ? correctOpt.text : '(не вказано)'}</li>`;
+                            correctHtml += `<li class="mb-1 p-1 border-b border-blue-50"><b>${dd.name}:</b> ${correctOpt ? correctOpt.text : '(не вказано)'}</li>`;
                         });
                     }
                     correctHtml += '</ul>';
+
                     content = `<div class="wrapper-problem-response"><div class="mb-4 text-lg leading-loose">${questionHtml}</div></div>
                     ${hintBlock}
                     <div class="mt-6"><button id="btn-${b.id}" class="btn-brand" onclick="window.saveDropdown('${b.id}')">Зберегти відповідь</button></div><div id="fb-${b.id}" class="notification"></div>
-                    <div id="an-${b.id}" class="analysis-block"><div class="correct-answer-box"><b>Правильні відповіді:</b><br>${correctHtml}</div><div class="explanation-box">${b.explanation}</div></div>`;
+                    
+                    <div id="an-${b.id}" class="analysis-block">
+                        <div class="correct-answer-box"><b>Правильні відповіді:</b><br>${correctHtml}</div>
+                        <div class="explanation-box">${b.explanation}</div>
+                    </div>`;
                 }
 
                 return `<div class="xblock" id="blk-${b.id}">${b.number ? `<h3 class="problem-header">Завдання ${b.number}</h3>`:''}<div class="problem">${content}</div></div>`;
@@ -3667,66 +3996,81 @@ window.formatColumns = function(cols) {
             document.getElementById(`opt-${oid}`).classList.toggle('selected', checkboxElement.checked);
         };
 
+        // --- ОНОВЛЕНІ ФУНКЦІЇ ЗБЕРЕЖЕННЯ (З ЧАСОМ) ---
+
+	window.getTaskDuration = function() {
+            const now = Date.now();
+            const last = window.state.runnerState.lastActionTime || window.state.runnerState.startTime;
+            const diff = now - last;
+            window.state.runnerState.lastActionTime = now; // Оновлюємо час останньої дії
+            return diff; 
+        };
+
         window.saveSingle = function(id) {
             if(window.state.runnerState.isFinished) return;
             const ans = window.state.runnerState.answers[id]?.temp;
-            if(ans) { window.state.runnerState.answers[id].final = ans; window.markSaved(id); }
-            else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Оберіть варіант!"; fb.style.display='block'; }
+            if(ans) { 
+                const dur = window.getTaskDuration();
+                // Якщо вже була відповідь, додаємо час до попереднього, інакше записуємо новий
+                const prevDur = window.state.runnerState.answers[id]?.duration || 0;
+                
+                window.state.runnerState.answers[id].final = ans; 
+                window.state.runnerState.answers[id].timestamp = Date.now();
+                window.state.runnerState.answers[id].duration = prevDur + dur; // Сумуємо час
+                window.markSaved(id); 
+            } else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Оберіть варіант!"; fb.style.display='block'; }
         };
 
         window.saveMulti = function(id) {
             if(window.state.runnerState.isFinished) return;
             const ans = window.state.runnerState.answers[id]?.temp;
             if(ans && ans.length > 0) { 
+                const dur = window.getTaskDuration();
+                const prevDur = window.state.runnerState.answers[id]?.duration || 0;
+
                 window.state.runnerState.answers[id].final = [...ans]; 
+                window.state.runnerState.answers[id].timestamp = Date.now();
+                window.state.runnerState.answers[id].duration = prevDur + dur;
                 window.markSaved(id); 
-            } else { 
-                const fb=document.getElementById(`fb-${id}`); 
-                fb.innerText="Оберіть хоча б один варіант!"; 
-                fb.style.display='block'; 
-            }
+            } else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Оберіть хоча б один варіант!"; fb.style.display='block'; }
         };
 
         window.saveShort = function(id) {
             if(window.state.runnerState.isFinished) return;
             const val = document.getElementById(`in-${id}`).value;
-            if(val) { window.state.runnerState.answers[id] = { final: val }; window.markSaved(id); }
-            else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Введіть число!"; fb.style.display='block'; }
+            if(val) { 
+                const dur = window.getTaskDuration();
+                const prevDur = window.state.runnerState.answers[id]?.duration || 0;
+
+                window.state.runnerState.answers[id] = { final: val, timestamp: Date.now(), duration: prevDur + dur }; 
+                window.markSaved(id); 
+            } else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Введіть число!"; fb.style.display='block'; }
         };
 
         // Save function for Dropdowns
         window.saveDropdown = function(id) {
             if(window.state.runnerState.isFinished) return;
-            
-            // Find all dropdowns in this block
-            // We can get them from DOM or state
-            // Let's get state since we have ID
             const test = window.findItem(window.state.activeTestId);
             const block = test.blocks.find(b => b.id === id);
-            
             if (!block || !block.dropdowns) return;
 
             const answers = {};
             let allSelected = true;
-
             block.dropdowns.forEach(dd => {
                 const selectEl = document.getElementById(`dd-input-${id}-${dd.id}`);
                 if (selectEl) {
-                    if (!selectEl.value) {
-                        allSelected = false;
-                    }
+                    if (!selectEl.value) allSelected = false;
                     answers[dd.id] = selectEl.value;
                 }
             });
 
             if(allSelected) {
-                window.state.runnerState.answers[id] = { final: answers }; 
+                const dur = window.getTaskDuration();
+                const prevDur = window.state.runnerState.answers[id]?.duration || 0;
+
+                window.state.runnerState.answers[id] = { final: answers, timestamp: Date.now(), duration: prevDur + dur }; 
                 window.markSaved(id);
-            } else {
-                const fb=document.getElementById(`fb-${id}`); 
-                fb.innerText="Заповніть усі поля!"; 
-                fb.style.display='block'; 
-            }
+            } else { const fb=document.getElementById(`fb-${id}`); fb.innerText="Заповніть усі поля!"; fb.style.display='block'; }
         };
 
         // DND Logic
@@ -3808,139 +4152,85 @@ window.formatColumns = function(cols) {
             if(window.state.runnerState.isFinished) return;
             const pairs = {};
             let hasAnswers = false; 
-
             document.querySelectorAll(`[id^="slot-${id}-"]`).forEach(slot => {
                 const draggableItem = slot.querySelector('.dnd-draggable'); 
-                
-                if(draggableItem) { 
-                    pairs[slot.dataset.lid] = draggableItem.dataset.rid;
-                    hasAnswers = true; 
-                }
+                if(draggableItem) { pairs[slot.dataset.lid] = draggableItem.dataset.rid; hasAnswers = true; }
             });
 
             if(hasAnswers) { 
-                window.state.runnerState.answers[id] = { final: pairs };
+                const dur = window.getTaskDuration();
+                const prevDur = window.state.runnerState.answers[id]?.duration || 0;
+
+                window.state.runnerState.answers[id] = { final: pairs, timestamp: Date.now(), duration: prevDur + dur };
                 window.markSaved(id);
             } else { 
-                const fb=document.getElementById(`fb-${id}`); 
-                fb.innerText="Заповніть поля!"; 
-                fb.style.display='block'; 
-                if (window.state.runnerState.answers[id]) {
-                     delete window.state.runnerState.answers[id];
-                }
+                const fb=document.getElementById(`fb-${id}`); fb.innerText="Заповніть поля!"; fb.style.display='block'; 
+                if (window.state.runnerState.answers[id]) delete window.state.runnerState.answers[id];
             }
         };
 
         window.finishTest = function(confirmed) {
-            // ЗАХИСТ ВІД ПОДВІЙНОГО СПРАЦЮВАННЯ
             if (window.state.runnerState.isFinished) return;
 
             clearInterval(timerInterval);
-            // Поки що НЕ видаляємо прогрес, щоб не втратити дані при збої
-            // localStorage.removeItem(...) перенесено вниз
-
+            
             const test = window.findItem(window.state.activeTestId); 
             let score = 0, max = 0;
             
             test.blocks.forEach(b => {
                 if(b.type==='instruction' || b.type==='pageBreak') return;
                 
-                const an = document.getElementById(`an-${b.id}`);
-                const hasExplanation = b.explanation && b.explanation.replace(/<[^>]*>/g, '').trim().length > 0;
-                
-                if(an && hasExplanation) {
-                    an.style.display = 'block';
-                } else if (an) {
-                    an.style.display = 'none';
-                }
-                
-                const blk = document.getElementById(`blk-${b.id}`);
-                // Перевіряємо чи існує блок (він може бути на іншій сторінці і не відрендерений в DOM)
-                if(blk) {
-                    blk.querySelectorAll('input, button, select').forEach(el => el.disabled = true);
-                }
-
-                // Підрахунок балів (Single)
+                // Підрахунок балів
                 if(b.type==='single') { 
-                    const points = parseInt(b.points) || 1; 
-                    max += points; 
-                    if(window.state.runnerState.answers[b.id]?.final === b.correctId) {
-                        score += points; 
-                    }
+                    const points = parseInt(b.points) || 1; max += points; 
+                    if(window.state.runnerState.answers[b.id]?.final === b.correctId) score += points; 
                 }
-                // Підрахунок балів (Short)
                 else if(b.type==='short') { 
-                    const points = parseInt(b.points) || 2; 
-                    max += points; 
+                    const points = parseInt(b.points) || 2; max += points; 
                     let userAns = window.state.runnerState.answers[b.id]?.final;
                     if(userAns) userAns = userAns.toString().replace(',', '.').trim();
-                    
-                    if(userAns == b.correctAnswer) {
-                        score += points; 
-                    }
+                    if(userAns == b.correctAnswer) score += points; 
                 }
-                // Підрахунок балів (Structured)
                 else if(b.type==='structured') {
                     const userAnswers = window.state.runnerState.answers[b.id]?.final || {};
-                    
                     b.items.forEach(item => {
-                        const p = parseInt(item.points) || 1;
-                        max += p;
-                        
-                        let userVal = userAnswers[item.id];
-                        if (userVal) userVal = userVal.toString().replace(',', '.').trim();
-                        let correctVal = item.correctAnswer.toString().replace(',', '.').trim();
-
-                        if (userVal == correctVal) {
-                            score += p;
-                        }
+                        const p = parseInt(item.points) || 1; max += p;
+                        let uVal = userAnswers[item.id];
+                        if (uVal) uVal = uVal.toString().replace(',', '.').trim();
+                        let cVal = item.correctAnswer.toString().replace(',', '.').trim();
+                        if (uVal == cVal) score += p;
                     });
                 }
-                // Підрахунок балів (Matching)
                 else if(b.type==='matching') {
                     const pairs = window.state.runnerState.answers[b.id]?.final || {};
                     const points = parseInt(b.pointsPerPair) || 1; 
-                    
                     Object.keys(b.correctPairs).forEach(k => { 
                         max += points; 
-                        if(pairs[k] === b.correctPairs[k]) {
-                            score += points; 
-                        }
+                        if(pairs[k] === b.correctPairs[k]) score += points; 
                     });
                 }
-                // Підрахунок балів (Multiple)
                 else if(b.type==='multiple') { 
                     const userSelections = window.state.runnerState.answers[b.id]?.final || [];
                     const correctIds = b.correctIds || [];
                     const points = parseInt(b.pointsPerSelection) || 1;
-
                     let matchCount = 0;
-                    userSelections.forEach(sel => {
-                        if (correctIds.includes(sel)) {
-                            matchCount++;
-                        }
-                    });
-                    
+                    userSelections.forEach(sel => { if (correctIds.includes(sel)) matchCount++; });
                     score += (matchCount * points);
                     max += (correctIds.length * points);
                 }
-                // Підрахунок балів (Dropdown)
                 else if(b.type==='dropdown') {
                     const userAnswers = window.state.runnerState.answers[b.id]?.final || {};
                     const points = parseInt(b.pointsPerDropdown) || 1;
-                    
                     if(b.dropdowns) {
                         b.dropdowns.forEach(dd => {
                             max += points; 
-                            if(userAnswers[dd.id] === dd.correctId) {
-                                score += points;
-                            }
+                            if(userAnswers[dd.id] === dd.correctId) score += points;
                         });
                     }
                 }
             });
 
-            // ЗБЕРЕЖЕННЯ РЕЗУЛЬТАТУ (Якщо це сесія учня)
+            // ЗБЕРЕЖЕННЯ
             if (window.state.activeSessionId && window.state.studentName) {
                 const resultRecord = {
                     id: uuid(),
@@ -3949,21 +4239,20 @@ window.formatColumns = function(cols) {
                     score: score,
                     maxScore: max,
                     answers: window.state.runnerState.answers, 
+                    violations: window.state.runnerState.violations || 0,
                     timestamp: new Date().toLocaleString()
                 };
                 
-                // Додаємо в масив
                 window.state.results.push(resultRecord);
-                
-                // !!! СПРОБА ЗБЕРЕЖЕННЯ З ПЕРЕВІРКОЮ !!!
                 const saveSuccess = window.saveTestsToStorage();
                 
                 if (saveSuccess) {
-                    // Тільки якщо зберегли успішно - ставимо прапорець і чистимо прогрес
                     window.state.runnerState.isFinished = true;
                     localStorage.removeItem('nmtProgress_' + window.state.activeSessionId);
                     
-                    // Вивід результату
+                    // ВИКЛИКАЄМО ФУНКЦІЮ ПІДСВІТКИ ДЛЯ УЧНЯ!
+                    window.highlightAnswersInReview();
+
                     document.getElementById('top-panel').innerHTML = `
                         <div id="result-full-box" class="text-center py-6 transition-all duration-300">
                             <div class="text-3xl font-bold text-green-600 mb-2">Тест завершено!</div>
@@ -3983,16 +4272,18 @@ window.formatColumns = function(cols) {
                         </div>
                     `;
                 } else {
-                    // Якщо зберегти не вийшло, скасовуємо зміни в пам'яті
-                    // (видаляємо незаписаний результат з масиву, щоб не було дублів при повторному натисканні)
                     window.state.results.pop(); 
-                    window.state.runnerState.isFinished = false; // Дозволяємо спробувати ще раз
-                    // Таймер можна запустити знову або залишити зупиненим
+                    window.state.runnerState.isFinished = false; 
+                    alert("Помилка збереження! Спробуйте ще раз.");
                 }
 
             } else {
-                // Для режиму "Пройти" з редактора (без збереження в базу)
+                // Режим "Пройти" (без учня)
                 window.state.runnerState.isFinished = true;
+                
+                // ТЕЖ ВИКЛИКАЄМО ПІДСВІТКУ
+                window.highlightAnswersInReview();
+
                 document.getElementById('top-panel').innerHTML = `
                     <div class="text-center py-4">
                         <div class="text-2xl font-bold text-red-600 mb-2">Тест завершено!</div>
@@ -4002,7 +4293,6 @@ window.formatColumns = function(cols) {
                 `;
             }
 
-            // Показуємо панель тільки якщо тест реально завершено
             if (window.state.runnerState.isFinished) {
                 document.getElementById('top-panel').classList.remove('hidden-panel');
                 document.body.style.paddingTop = '180px';
@@ -4385,9 +4675,29 @@ window.formatColumns = function(cols) {
             });
         };
 
+        // --- ОНОВЛЕНИЙ БАНК (З ПОШУКОМ) ---
         window.renderBank = function(container) {
             const currentFolderId = window.state.currentBankFolderId;
-            const items = window.state.bankItems.filter(i => i.parentId === currentFolderId);
+            const query = (window.state.searchQuery || '').toLowerCase();
+
+            // Фільтрація
+            const items = window.state.bankItems.filter(i => {
+                // Якщо є пошук
+                if (query) {
+                    // 1. Шукаємо в назві (працює для папок і завдань)
+                    if (i.title && i.title.toLowerCase().includes(query)) return true;
+
+                    // 2. Якщо це ЗАВДАННЯ, шукаємо в тексті та джерелі
+                    if (i.type === 'task' && i.content) {
+                        const contentStr = JSON.stringify(i.content).toLowerCase();
+                        const sourceStr = (i.bankSource || '').toLowerCase();
+                        return contentStr.includes(query) || sourceStr.includes(query);
+                    }
+                    return false;
+                }
+                // Якщо немає пошуку - показуємо вміст папки
+                return i.parentId === currentFolderId;
+            });
             
             const folders = items.filter(i => i.type === 'folder').sort((a,b) => a.title.localeCompare(b.title));
             const tasks = items.filter(i => i.type === 'task'); 
@@ -4400,26 +4710,26 @@ window.formatColumns = function(cols) {
                 breadcrumbs.unshift(f);
                 tempId = f.parentId;
             }
-            const breadcrumbHtml = `
-                <div class="flex items-center gap-2 mb-4 text-sm text-gray-600">
-                    <span class="cursor-pointer hover:underline" onclick="window.openBankFolder('root')">🏦 Банк</span>
-                    ${breadcrumbs.map(f => `<span>/</span> <span class="cursor-pointer hover:underline font-bold" onclick="window.openBankFolder('${f.id}')">${f.title}</span>`).join('')}
-                </div>
-            `;
+            const breadcrumbHtml = query 
+                ? `<span class="text-blue-600 font-bold">🔍 Пошук у Банку: "${window.state.searchQuery}"</span> <button onclick="window.clearSearch(); window.renderApp()" class="text-xs ml-2 text-red-500 underline">Скинути</button>`
+                : `<div class="flex items-center gap-2 mb-4 text-sm text-gray-600"><span class="cursor-pointer hover:underline" onclick="window.openBankFolder('root')">🏦 Банк</span>${breadcrumbs.map(f => `<span>/</span> <span class="cursor-pointer hover:underline font-bold" onclick="window.openBankFolder('${f.id}')">${f.title}</span>`).join('')}</div>`;
 
             container.innerHTML = `
                 <div class="max-w-7xl mx-auto p-6 h-screen flex flex-col">
                     <div class="flex gap-4 mb-4 border-b pb-2">
-                        <button onclick="window.switchSection('tests')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Мої тести</button>
-                        <button onclick="window.switchSection('bank')" class="text-xl font-bold border-b-2 border-[#FF2938] pb-2 px-4 text-[#FF2938]">Банк завдань</button>
-                        <button onclick="window.switchSection('cabinet')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Кабінет тестування</button>
+                        <button onclick="window.clearSearch(); window.switchSection('tests')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Мої тести</button>
+                        <button onclick="window.clearSearch(); window.switchSection('bank')" class="text-xl font-bold border-b-2 border-[#FF2938] pb-2 px-4 text-[#FF2938]">Банк завдань</button>
+                        <button onclick="window.clearSearch(); window.switchSection('cabinet')" class="text-xl font-bold text-gray-500 hover:text-gray-800 pb-2 px-4">Кабінет тестування</button>
                     </div>
 
-                    <div class="flex justify-between items-center mb-4">
-                        <div>
-                            <h2 class="text-2xl font-bold text-gray-800">Банк завдань</h2>
-                            ${breadcrumbHtml}
+                    <div class="flex justify-between items-center mb-4 gap-4">
+                        <div class="flex-1">${breadcrumbHtml}</div>
+                        
+                        <div class="relative w-64">
+                            <input type="text" id="global-search-input" placeholder="Знайти завдання..." class="w-full border rounded-lg pl-8 pr-2 py-1.5 text-sm" value="${window.state.searchQuery || ''}" oninput="window.state.searchQuery=this.value; window.renderApp()">
+                            <span class="absolute left-2 top-2 text-gray-400 text-xs">🔍</span>
                         </div>
+
                         <div class="flex gap-2">
                             <button onclick="window.createBankFolder()" class="spa-btn spa-btn-secondary">+ Папка</button>
                             <button onclick="window.createBankTask()" class="spa-btn bg-[#FF2938] text-white hover:bg-red-700">+ Нове завдання</button>
@@ -4429,7 +4739,7 @@ window.formatColumns = function(cols) {
                     <div class="flex flex-1 gap-6 overflow-hidden">
                         <div class="w-1/4 bg-white border rounded shadow-sm overflow-y-auto p-2">
                             <div class="text-xs font-bold text-gray-400 uppercase mb-2">Папки</div>
-                            ${currentFolderId !== 'root' ? `
+                            ${!query && currentFolderId !== 'root' ? `
                                 <div class="bank-folder-item" 
                                      ondrop="window.bankFolderDrop(event, '${window.state.bankItems.find(i=>i.id===currentFolderId)?.parentId || 'root'}')"
                                      ondragover="event.preventDefault()"
@@ -4459,13 +4769,11 @@ window.formatColumns = function(cols) {
 
                         <div class="flex-1 bg-gray-50 border rounded shadow-inner overflow-y-auto p-4" 
                              ondragover="window.bankDragOver(event)" ondrop="window.bankDrop(event)">
-                            <div class="text-xs font-bold text-gray-400 uppercase mb-2">Завдання в цій папці (${tasks.length})</div>
-                            ${tasks.length === 0 ? '<div class="text-center text-gray-400 mt-10">Папка порожня. Додайте завдання.</div>' : ''}
+                            <div class="text-xs font-bold text-gray-400 uppercase mb-2">Завдання (${tasks.length})</div>
+                            ${tasks.length === 0 ? '<div class="text-center text-gray-400 mt-10">Нічого не знайдено.</div>' : ''}
                             
                             ${tasks.map((t, index) => {
-                                // Ми тепер НЕ вирізаємо HTML, а показуємо як є (обмежено CSS класом)
                                 const contentHtml = t.content.question;
-                                
                                 const sourceHtml = t.bankSource 
                                     ? `<div class="text-xs text-blue-600 font-bold bg-blue-50 inline-block px-2 py-1 rounded mt-1 border border-blue-100">${t.bankSource}</div>` 
                                     : '';
@@ -4474,30 +4782,23 @@ window.formatColumns = function(cols) {
                                 <div class="bank-task-card" draggable="true" ondragstart="window.bankDragStart(event, '${t.id}')">
                                     <div class="bank-task-number">${index + 1}</div>
                                     <div class="bank-task-info" style="min-width: 0;"> <div class="bank-task-type">${t.content.type}</div>
-                                        
-                                        <div class="bank-preview-content rich-content" style="border:none; padding:0;">
-                                            ${contentHtml}
-                                        </div>
-                                        
+                                        <div class="bank-preview-content rich-content" style="border:none; padding:0;">${contentHtml}</div>
                                         ${sourceHtml}
                                     </div>
                                     <div class="bank-task-actions flex flex-col gap-2 items-center justify-center pl-2 border-l">
-                                        <button onclick="window.editBankTask('${t.id}')" class="text-gray-500 hover:text-blue-600 p-1" title="Редагувати">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                                        </button>
-                                        <button onclick="window.deleteBankItem(event, '${t.id}')" class="text-red-400 hover:text-red-600 p-1" title="Видалити">
-                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
-                                        </button>
+                                        <button onclick="window.editBankTask('${t.id}')" class="text-gray-500 hover:text-blue-600 p-1" title="Редагувати"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button>
+                                        <button onclick="window.deleteBankItem(event, '${t.id}')" class="text-red-400 hover:text-red-600 p-1" title="Видалити"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg></button>
                                     </div>
-                                </div>
-                                `;
+                                </div>`;
                             }).join('')}
                         </div>
                     </div>
-                </div>
-            `;
+                </div>`;
 
-            // ВАЖЛИВО: Запускаємо MathJax для рендеру формул у списку
+            // ВІДНОВЛЮЄМО ФОКУС
+            setTimeout(window.restoreSearchFocus, 0);
+            
+            // Латекс для банку
             setTimeout(() => {
                 if(window.MathJax && window.MathJax.typesetPromise) {
                     window.MathJax.typesetPromise();
@@ -4694,92 +4995,208 @@ window.formatColumns = function(cols) {
         };
 
         // 3. Імпорт з Банку в Тест (Модальне вікно)
+        // --- ОНОВЛЕНЕ ВІКНО ІМПОРТУ (ПОШУК ПАПОК + ПЕРЕХІД) ---
         window.openBankImportModal = function() {
-            // Функція побудови дерева (рекурсивна)
-            const renderTree = (parentId, level=0) => {
-                const items = window.state.bankItems.filter(i => i.parentId === parentId);
-                const folders = items.filter(i => i.type === 'folder').sort((a,b) => a.title.localeCompare(b.title));
-                const tasks = items.filter(i => i.type === 'task');
+            
+            // 1. Допоміжна функція для переходу до папки з пошуку
+            window.jumpToFolderInTree = function(folderId) {
+                // Очищаємо поле пошуку
+                const searchInput = document.getElementById('bank-import-search');
+                if(searchInput) searchInput.value = '';
                 
-                let html = '';
+                // Перемальовуємо повне дерево
+                document.getElementById('bank-import-list').innerHTML = window.renderImportTree('');
                 
-                // Рендер папок
-                folders.forEach(f => {
-                    // Перевіряємо, чи є вміст, щоб знати, чи малювати стрілочку/плюсик (опціонально)
-                    const childrenHtml = renderTree(f.id, level + 1);
+                // Знаходимо шлях до папки (щоб розгорнути батьків)
+                let currentId = folderId;
+                const path = []; // Масив ID, які треба розкрити
+                
+                // Піднімаємось вгору по дереву до кореня
+                while(currentId !== 'root') {
+                    path.push(currentId);
+                    const item = window.state.bankItems.find(i => i.id === currentId);
+                    if(!item) break;
+                    currentId = item.parentId;
+                }
+                
+                // Розгортаємо папки зверху вниз
+                // (path містить [цільова_папка, батько, дід...], тому reversing не обов'язковий для display block, але логічний)
+                path.forEach(id => {
+                    const childrenContainer = document.getElementById(`tree-children-${id}`);
+                    const folderIcon = document.getElementById(`folder-icon-${id}`);
                     
-                    html += `
-                        <div style="margin-left: ${level * 10}px;">
-                            <div class="cursor-pointer hover:bg-gray-100 p-1 rounded flex items-center gap-2 select-none" 
-                                 onclick="window.toggleTreeFolder(this)">
-                                <span class="folder-tree-icon">📁</span> 
-                                <span class="font-bold text-gray-700">${f.title}</span>
-                            </div>
-                            
-                            <div style="display: none; border-left: 1px solid #ddd; margin-left: 7px; padding-left: 5px;">
-                                ${childrenHtml || '<div class="text-xs text-gray-400 italic pl-6">Пусто</div>'}
-                            </div>
-                        </div>
-                    `;
+                    if (childrenContainer) {
+                        childrenContainer.style.display = 'block';
+                    }
+                    if (folderIcon) {
+                        folderIcon.innerText = '📂'; // Змінюємо іконку на відкриту
+                    }
                 });
 
-                // Рендер завдань
-                tasks.forEach(t => {
-                    // Використовуємо повний HTML замість preview text
-                    const contentHtml = t.content.question; 
-                    const sourceLabel = t.bankSource ? `<span class="text-xs text-blue-600 bg-blue-50 px-1 rounded border border-blue-100 ml-2 whitespace-nowrap">${t.bankSource}</span>` : '';
+                // Скролимо до цільової папки
+                setTimeout(() => {
+                    const targetEl = document.getElementById(`folder-row-${folderId}`);
+                    if(targetEl) {
+                        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        targetEl.classList.add('bg-yellow-100'); // Підсвітимо на секунду
+                        setTimeout(() => targetEl.classList.remove('bg-yellow-100'), 2000);
+                    }
+                }, 100);
+            };
+
+            // 2. Функція рендеру списку
+            window.renderImportTree = function(query = '') {
+                query = query.toLowerCase();
+                let html = '';
+
+                if (query) {
+                    // --- РЕЖИМ ПОШУКУ ---
                     
-                    html += `
-                        <div style="margin-left: ${level * 10 + 20}px; border-bottom:1px solid #f3f4f6; padding:8px; display:flex; justify-content:space-between; align-items:start; background: white;">
-                            <div class="flex flex-col w-full pr-4">
-                                <div class="flex items-center gap-2 mb-1">
-                                    <span class="text-xs font-bold text-blue-500 uppercase border border-blue-200 px-1 rounded bg-blue-50 flex-shrink-0">${t.content.type}</span>
-                                    ${sourceLabel}
+                    // А) Шукаємо Папки
+                    const foundFolders = window.state.bankItems.filter(i => i.type === 'folder' && i.title.toLowerCase().includes(query));
+                    
+                    if (foundFolders.length > 0) {
+                        html += `<div class="mb-4"><div class="text-xs font-bold text-gray-400 uppercase mb-2">Знайдені папки</div>`;
+                        foundFolders.forEach(f => {
+                            // Знаходимо шлях (хлібні крихти) для краси
+                            let pathStr = '';
+                            let tempId = f.parentId;
+                            while(tempId !== 'root') {
+                                const parent = window.state.bankItems.find(i => i.id === tempId);
+                                if(parent) { pathStr = parent.title + ' / ' + pathStr; tempId = parent.parentId; } 
+                                else break;
+                            }
+
+                            html += `
+                                <div class="border border-blue-100 bg-blue-50 p-2 rounded mb-2 flex justify-between items-center hover:bg-blue-100 cursor-pointer" 
+                                     onclick="window.jumpToFolderInTree('${f.id}')">
+                                    <div class="flex items-center gap-2">
+                                        <span class="text-xl">📁</span>
+                                        <div>
+                                            <div class="font-bold text-blue-800">${f.title}</div>
+                                            ${pathStr ? `<div class="text-[10px] text-gray-500">${pathStr}</div>` : ''}
+                                        </div>
+                                    </div>
+                                    <button class="text-xs bg-white border border-blue-200 text-blue-600 px-2 py-1 rounded shadow-sm">Перейти ▶</button>
                                 </div>
-                                <div class="rich-content text-sm text-gray-700 bank-preview-content text-left" style="border:none; padding:0; max-height:100px;">
-   			 		${contentHtml}
-				</div>
-                            </div>
-                            <button onclick="window.importTaskFromBank('${t.id}')" class="text-xs bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700 shadow-sm whitespace-nowrap self-center">+ Додати</button>
-                        </div>
-                    `;
-                });
+                            `;
+                        });
+                        html += `</div>`;
+                    }
+
+                    // Б) Шукаємо Завдання
+                    const foundTasks = window.state.bankItems.filter(i => {
+                        if (i.type !== 'task') return false;
+                        const contentStr = JSON.stringify(i.content).toLowerCase();
+                        const sourceStr = (i.bankSource || '').toLowerCase();
+                        return contentStr.includes(query) || sourceStr.includes(query);
+                    });
+
+                    if (foundTasks.length > 0) {
+                        html += `<div><div class="text-xs font-bold text-gray-400 uppercase mb-2">Знайдені завдання</div>`;
+                        foundTasks.forEach(t => {
+                            const contentHtml = t.content.question;
+                            const sourceLabel = t.bankSource ? `<span class="text-xs text-blue-600 bg-blue-50 px-1 rounded border border-blue-100 ml-2 whitespace-nowrap">${t.bankSource}</span>` : '';
+                            const parentFolder = window.state.bankItems.find(f => f.id === t.parentId);
+                            const folderName = parentFolder ? parentFolder.title : 'Корінь';
+
+                            html += `
+                                <div class="border-b border-gray-100 p-3 hover:bg-gray-50 flex justify-between items-start">
+                                    <div class="flex flex-col w-full pr-4">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-[10px] text-gray-400 font-bold uppercase bg-gray-100 px-1 rounded cursor-pointer hover:underline" onclick="window.jumpToFolderInTree('${t.parentId}')" title="Перейти до папки">${folderName}</span>
+                                            <span class="text-xs font-bold text-blue-500 uppercase border border-blue-200 px-1 rounded bg-blue-50 flex-shrink-0">${t.content.type}</span>
+                                            ${sourceLabel}
+                                        </div>
+                                        <div class="rich-content text-sm text-gray-700 bank-preview-content text-left" style="border:none; padding:0; max-height:80px;">${contentHtml}</div>
+                                    </div>
+                                    <button onclick="window.importTaskFromBank('${t.id}')" class="text-xs bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700 shadow-sm whitespace-nowrap self-center">+ Додати</button>
+                                </div>
+                            `;
+                        });
+                        html += `</div>`;
+                    }
+
+                    if (foundFolders.length === 0 && foundTasks.length === 0) {
+                        return '<div class="text-center text-gray-400 py-4">Нічого не знайдено</div>';
+                    }
+
+                } else {
+                    // --- РЕЖИМ ДЕРЕВА ---
+                    const buildTree = (parentId, level) => {
+                        const items = window.state.bankItems.filter(i => i.parentId === parentId);
+                        const folders = items.filter(i => i.type === 'folder').sort((a,b) => a.title.localeCompare(b.title));
+                        const tasks = items.filter(i => i.type === 'task');
+                        let treeHtml = '';
+
+                        folders.forEach(f => {
+                            const childrenHtml = buildTree(f.id, level + 1);
+                            // Додаємо ID для елементів, щоб jumpToFolder міг їх знайти і відкрити
+                            treeHtml += `
+                                <div style="margin-left: ${level * 10}px;">
+                                    <div id="folder-row-${f.id}" class="cursor-pointer hover:bg-gray-100 p-1 rounded flex items-center gap-2 select-none transition-colors" onclick="window.toggleTreeFolder(this)">
+                                        <span id="folder-icon-${f.id}" class="folder-tree-icon">📁</span> <span class="font-bold text-gray-700">${f.title}</span>
+                                    </div>
+                                    <div id="tree-children-${f.id}" style="display: none; border-left: 1px solid #ddd; margin-left: 7px; padding-left: 5px;">
+                                        ${childrenHtml || '<div class="text-xs text-gray-400 italic pl-6">Пусто</div>'}
+                                    </div>
+                                </div>`;
+                        });
+
+                        tasks.forEach(t => {
+                            const contentHtml = t.content.question; 
+                            const sourceLabel = t.bankSource ? `<span class="text-xs text-blue-600 bg-blue-50 px-1 rounded border border-blue-100 ml-2 whitespace-nowrap">${t.bankSource}</span>` : '';
+                            treeHtml += `
+                                <div style="margin-left: ${level * 10 + 20}px; border-bottom:1px solid #f3f4f6; padding:8px; display:flex; justify-content:space-between; align-items:start; background: white;">
+                                    <div class="flex flex-col w-full pr-4">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            <span class="text-xs font-bold text-blue-500 uppercase border border-blue-200 px-1 rounded bg-blue-50 flex-shrink-0">${t.content.type}</span>
+                                            ${sourceLabel}
+                                        </div>
+                                        <div class="rich-content text-sm text-gray-700 bank-preview-content text-left" style="border:none; padding:0; max-height:100px;">${contentHtml}</div>
+                                    </div>
+                                    <button onclick="window.importTaskFromBank('${t.id}')" class="text-xs bg-green-600 text-white px-3 py-2 rounded hover:bg-green-700 shadow-sm whitespace-nowrap self-center">+ Додати</button>
+                                </div>`;
+                        });
+                        return treeHtml;
+                    };
+                    html = buildTree('root', 0);
+                }
                 return html;
             };
 
-            const html = `
-                <div class="h-[60vh] overflow-y-auto border p-4 bg-white rounded shadow-inner">
-                    <div class="text-sm text-gray-500 mb-2 italic">Натисніть на папку, щоб розгорнути її:</div>
-                    ${renderTree('root')}
+            // 3. HTML модалки
+            const modalHtml = `
+                <div class="text-left mb-4">
+                    <div class="relative">
+                        <input id="bank-import-search" type="text" placeholder="Пошук завдань або папок..." 
+                               class="w-full border rounded-lg pl-8 pr-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                               oninput="document.getElementById('bank-import-list').innerHTML = window.renderImportTree(this.value); setTimeout(() => { if(window.MathJax) window.MathJax.typesetPromise(); }, 50);">
+                        <span class="absolute left-2 top-2 text-gray-400">🔍</span>
+                    </div>
+                </div>
+                <div id="bank-import-list" class="h-[60vh] overflow-y-auto border p-4 bg-white rounded shadow-inner">
+                    ${window.renderImportTree('')}
                 </div>
             `;
             
-            window.showModal("Оберіть завдання з Банку", html, () => {});
+            window.showModal("Оберіть завдання з Банку", modalHtml, () => {});
             
-            // Запуск Latex у модалці
             setTimeout(() => {
-                if(window.MathJax && window.MathJax.typesetPromise) {
-                    const modalBody = document.getElementById('modal-body');
-                    if(modalBody) window.MathJax.typesetPromise([modalBody]);
-                }
-            }, 100);
-            
-            // 1. Ховаємо кнопку "Так", бо ми використовуємо кнопки "+ Додати" всередині списку
-            const btnYes = document.getElementById('modal-btn-yes');
-            btnYes.style.display = 'none';
+                if(window.MathJax && window.MathJax.typesetPromise) window.MathJax.typesetPromise();
+                
+                const btnYes = document.getElementById('modal-btn-yes');
+                if(btnYes) btnYes.style.display = 'none';
 
-            // 2. Налаштовуємо кнопку "Скасувати/Назад", щоб вона відновлювала кнопку "Так" при закритті
-            const btnNo = document.getElementById('modal-btn-no');
-            // Клонуємо, щоб прибрати старі слухачі і додати новий
-            const newBtnNo = btnNo.cloneNode(true);
-            btnNo.parentNode.replaceChild(newBtnNo, btnNo);
-            
-            newBtnNo.textContent = "Скасувати"; // Або "Назад"
-            newBtnNo.onclick = function() {
-                document.getElementById('global-modal').style.display = 'none';
-                // ВАЖЛИВО: Відновлюємо кнопку "Так" для інших модальних вікон
-                document.getElementById('modal-btn-yes').style.display = 'inline-flex';
-            };
+                const btnNo = document.getElementById('modal-btn-no');
+                const newBtnNo = btnNo.cloneNode(true);
+                btnNo.parentNode.replaceChild(newBtnNo, btnNo);
+                newBtnNo.textContent = "Скасувати";
+                newBtnNo.onclick = function() {
+                    document.getElementById('global-modal').style.display = 'none';
+                    document.getElementById('modal-btn-yes').style.display = 'inline-flex';
+                };
+            }, 100);
         };
 
         window.importTaskFromBank = function(taskId) {
@@ -4798,69 +5215,98 @@ window.formatColumns = function(cols) {
             }
         };
 
-	window.openBankExportModal = function() {
-            // Функція для побудови дерева ПАПОК (рекурсивна, зі згортанням)
-            const renderFolderTree = (parentId, level=0) => {
-                const folders = window.state.bankItems
-                    .filter(i => i.parentId === parentId && i.type === 'folder')
-                    .sort((a,b) => a.title.localeCompare(b.title));
-                
+	// --- ОНОВЛЕНЕ ВІКНО ЕКСПОРТУ (З ПОШУКОМ ПАПОК) ---
+        window.openBankExportModal = function() {
+            // 1. Функція рендеру (Внутрішня)
+            window.renderExportTree = function(query = '') {
+                query = query.toLowerCase();
                 let html = '';
-                
-                // Якщо це корінь, додаємо опцію "Коренева папка"
-                if (parentId === 'root' && level === 0) {
+
+                // Опція кореневої папки (завжди показуємо, якщо немає пошуку або підходить під пошук)
+                if (!query || 'коренева папка банк'.includes(query)) {
                      html += `
                         <div style="border-bottom:1px solid #eee; padding:6px; display:flex; justify-content:space-between; align-items:center; background: #f9fafb; margin-bottom: 5px;">
                             <span class="font-bold text-gray-700">📂 Коренева папка (Банк)</span>
                             <button onclick="window.confirmExportToBank('root')" class="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700">Зберегти сюди</button>
-                        </div>
-                     `;
+                        </div>`;
                 }
 
-                folders.forEach(f => {
-                    const childrenHtml = renderFolderTree(f.id, level + 1);
+                if (query) {
+                    // --- РЕЖИМ ПОШУКУ (Список папок) ---
+                    const foundFolders = window.state.bankItems.filter(i => i.type === 'folder' && i.title.toLowerCase().includes(query));
                     
-                    // Перевіряємо, чи є підпапки, щоб знати, чи потрібен відступ/іконка
-                    // Але тут ми завжди малюємо структуру, просто ховаємо її
-                    
-                    html += `
-                        <div style="margin-left: ${level * 10}px;">
-                            <div style="border-bottom:1px solid #f3f4f6; padding:6px; display:flex; justify-content:space-between; align-items:center; background: white; border-radius: 4px;" class="hover:bg-gray-50">
-                                <div class="flex items-center gap-2 cursor-pointer select-none flex-1" onclick="window.toggleTreeFolder(this.parentElement)">
+                    if (foundFolders.length === 0 && !html) return '<div class="text-center text-gray-400 py-4">Папок не знайдено</div>';
+
+                    foundFolders.forEach(f => {
+                        html += `
+                            <div style="border-bottom:1px solid #f3f4f6; padding:6px; display:flex; justify-content:space-between; align-items:center; background: white;" class="hover:bg-gray-50">
+                                <div class="flex items-center gap-2">
                                     <span class="folder-tree-icon text-yellow-500">📁</span> 
                                     <span class="text-sm font-bold text-gray-700">${f.title}</span>
                                 </div>
                                 <button onclick="window.confirmExportToBank('${f.id}')" class="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 shadow-sm">Зберегти сюди</button>
-                            </div>
-                            
-                            <div style="display: none; border-left: 1px solid #ddd; margin-left: 8px;">
-                                ${childrenHtml}
-                            </div>
-                        </div>
-                    `;
-                });
+                            </div>`;
+                    });
+
+                } else {
+                    // --- РЕЖИМ ДЕРЕВА ---
+                    const buildFolderTree = (parentId, level) => {
+                        const folders = window.state.bankItems
+                            .filter(i => i.parentId === parentId && i.type === 'folder')
+                            .sort((a,b) => a.title.localeCompare(b.title));
+                        
+                        let tree = '';
+                        folders.forEach(f => {
+                            const childrenHtml = buildFolderTree(f.id, level + 1);
+                            tree += `
+                                <div style="margin-left: ${level * 10}px;">
+                                    <div style="border-bottom:1px solid #f3f4f6; padding:6px; display:flex; justify-content:space-between; align-items:center; background: white; border-radius: 4px;" class="hover:bg-gray-50">
+                                        <div class="flex items-center gap-2 cursor-pointer select-none flex-1" onclick="window.toggleTreeFolder(this.parentElement)">
+                                            <span class="folder-tree-icon text-yellow-500">📁</span> 
+                                            <span class="text-sm font-bold text-gray-700">${f.title}</span>
+                                        </div>
+                                        <button onclick="window.confirmExportToBank('${f.id}')" class="text-xs bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 shadow-sm">Зберегти сюди</button>
+                                    </div>
+                                    <div style="display: none; border-left: 1px solid #ddd; margin-left: 8px;">
+                                        ${childrenHtml}
+                                    </div>
+                                </div>`;
+                        });
+                        return tree;
+                    };
+                    html += buildFolderTree('root', 0);
+                }
                 return html;
             };
 
-            const html = `
-                <div class="h-[60vh] overflow-y-auto border p-4 bg-white rounded shadow-inner text-left">
-                    <p class="mb-4 text-gray-500 text-sm">Оберіть папку, куди зберегти це завдання (натисніть на папку, щоб відкрити підпапки):</p>
-                    ${renderFolderTree('root')}
+            const modalHtml = `
+                <div class="text-left mb-4">
+                    <p class="mb-2 text-gray-500 text-sm">Оберіть папку для збереження:</p>
+                    <div class="relative">
+                        <input type="text" placeholder="Знайти папку..." 
+                               class="w-full border rounded-lg pl-8 pr-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" 
+                               oninput="document.getElementById('bank-export-list').innerHTML = window.renderExportTree(this.value)">
+                        <span class="absolute left-2 top-2 text-gray-400">🔍</span>
+                    </div>
+                </div>
+                <div id="bank-export-list" class="h-[60vh] overflow-y-auto border p-4 bg-white rounded shadow-inner text-left">
+                    ${window.renderExportTree('')}
                 </div>
             `;
             
-            window.showModal("Експорт у Банк завдань", html, () => {});
+            window.showModal("Експорт у Банк завдань", modalHtml, () => {});
             
-            // Ховаємо "Так", залишаємо тільки "Скасувати"
-            document.getElementById('modal-btn-yes').style.display = 'none';
-            const btnNo = document.getElementById('modal-btn-no');
-            const newBtnNo = btnNo.cloneNode(true);
-            btnNo.parentNode.replaceChild(newBtnNo, btnNo);
-            newBtnNo.textContent = "Скасувати";
-            newBtnNo.onclick = function() {
-                document.getElementById('global-modal').style.display = 'none';
-                document.getElementById('modal-btn-yes').style.display = 'inline-flex';
-            };
+            setTimeout(() => {
+                document.getElementById('modal-btn-yes').style.display = 'none';
+                const btnNo = document.getElementById('modal-btn-no');
+                const newBtnNo = btnNo.cloneNode(true);
+                btnNo.parentNode.replaceChild(newBtnNo, btnNo);
+                newBtnNo.textContent = "Скасувати";
+                newBtnNo.onclick = function() {
+                    document.getElementById('global-modal').style.display = 'none';
+                    document.getElementById('modal-btn-yes').style.display = 'inline-flex';
+                };
+            }, 50);
         };
 
 	window.confirmExportToBank = function(targetFolderId) {
@@ -5210,6 +5656,41 @@ window.formatColumns = function(cols) {
             }, 200);
         };
 
+	// --- НОВЕ: Ручне редагування балів ---
+        window.editStudentScore = function(resultId) {
+            const res = window.state.results.find(r => r.id === resultId);
+            if (!res) return;
+
+            const newScoreStr = prompt(`Поточний бал: ${res.score} із ${res.maxScore}.\nВведіть новий бал:`, res.score);
+            
+            // Якщо натиснули "Скасувати" або нічого не ввели
+            if (newScoreStr === null || newScoreStr.trim() === '') return;
+
+            const newScore = parseFloat(newScoreStr.replace(',', '.'));
+            
+            if (isNaN(newScore)) {
+                alert("Будь ласка, введіть число.");
+                return;
+            }
+
+            // Зберігаємо
+            res.score = newScore;
+            window.saveTestsToStorage();
+            window.renderApp(); // Оновлюємо таблицю
+        };
+
+	// --- ФУНКЦІЯ ДЛЯ УТРИМАННЯ ФОКУСУ ПОШУКУ ---
+        window.restoreSearchFocus = function() {
+            const input = document.getElementById('global-search-input');
+            if (input && window.state.searchQuery) {
+                input.focus();
+                // Ставимо курсор в кінець тексту
+                const val = input.value;
+                input.value = '';
+                input.value = val;
+            }
+        };
+
         window.init();
 
 	// --- НОВЕ: Експорт та Імпорт Даних ---
@@ -5226,6 +5707,8 @@ window.formatColumns = function(cols) {
             const backup = {
                 items: window.state.items,          // Ваші тести і папки
                 bankItems: window.state.bankItems,  // Банк завдань
+                sessions: window.state.sessions,    // Сесії
+                results: window.state.results,      // Результати учнів
                 date: new Date().toLocaleString()
             };
             const name = `NMT_Backup_${new Date().toISOString().slice(0,10)}.json`;
